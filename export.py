@@ -1,188 +1,201 @@
-# export_pdf.py
+# export.py
 import sys
 import os
-# import re # No longer needed directly
 from datetime import datetime
-from fpdf import FPDF # Import the PDF library
-from fpdf.enums import XPos, YPos # Import necessary enums for positioning
+from fpdf import FPDF
+from fpdf.enums import XPos, YPos
 
-# --- Import shared elements from search.py ---
-try:
-    from search import (
-        DATABASE_PATH, NORMALIZE_COLUMNS_ORIGINAL, UNITS_MAP, KW_TO_PS,
-        HOMOLOGATIONSDATUM_INPUT_FORMAT, HOMOLOGATIONSDATUM_OUTPUT_FORMAT,
-        OMIT_COLUMNS_ORIGINAL, OMIT_COLUMNS_CLEANED, # Import the derived set too
-        DIVIDER_MARKER, DISPLAY_ORDER_WITH_DIVIDERS,
-        clean_sql_identifier, # Import helper if needed by PDF generation logic directly
-        # create_normalized_table_name, # Not directly needed by PDF generation
-        search_by_tg_code, # Import the main search function
-        # *** NEW: Import translation maps ***
-        ANTRIEB_MAP, TREIBSTOFF_MAP
-    )
-except ImportError:
-    print("Error: Could not import from 'search.py'. Make sure it's in the same directory.")
-    sys.exit(1)
+# Import refactored components
+import config
+import database
+import formatting
+import translation # Import the new translation module
+from utils import clean_sql_identifier, get_resource_path
 
-# --- PDF Specific Configuration (Remains in this file) ---
-PDF_TITLE = "Fahrzeugdatenblatt"
-PDF_FONT = "Helvetica" # Changed from "Arial"
-PDF_FONT_SIZE_TITLE = 16
-PDF_FONT_SIZE_HEADER = 12
-PDF_FONT_SIZE_BODY = 10
-PDF_LABEL_WIDTH = 60 # Width for the label column in mm (Restored)
-PDF_LINE_HEIGHT = 6 # Line height in mm (Restored)
-PDF_DIVIDER_THICKNESS = 0.2 # Thickness of divider lines in mm
-PDF_DIVIDER_MARGIN = 3 # Space above/below divider line in mm
+# --- PDF Generation Class (Specific to Single Export) ---
+class PDFSingle(FPDF):
+    def header(self):
+        # Set font (use the default family set during PDF creation)
+        self.set_font(style='I', size=8)
+        page_w = self.w - self.l_margin - self.r_margin
+        # Header Text (Left Aligned) - Use translated title
+        self.cell(page_w / 2, 10, translation._("pdf_title_single"), border=0, align='L')
+        # Date (Right Aligned) - Use translated "Generated:"
+        generation_date = datetime.now().strftime("%d.%m.%Y")
+        generated_text = translation._("pdf_generated_on")
+        self.cell(page_w / 2, 10, f"{generated_text} {generation_date}", border=0, align='R', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        # Line break and separator line
+        self.ln(2)
+        self.set_draw_color(180, 180, 180)
+        self.set_line_width(config.PDF_DIVIDER_THICKNESS)
+        self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
+        self.ln(5) # Space after header line
 
-# --- NEW: Export Directory Configuration ---
-EXPORT_DIR = "export"
+    def add_vehicle_details(self, formatted_data):
+        """Adds the main vehicle details to the PDF."""
+        if not formatted_data:
+            self.set_font_size(10)
+            # Use translated message
+            self.cell(0, 10, translation._("pdf_no_data"), border=0, align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            return
+
+        # --- Main Header (TG_Code, Marke, Typ) ---
+        self.set_font(self.font_family, 'B', config.PDF_FONT_SIZE_HEADER) # Use self.font_family
+        # Safely get header values using original names
+        tg_code_val = formatted_data.get('TG_Code', 'N/A')
+        marke_val = formatted_data.get('Marke', 'N/A')
+        typ_val = formatted_data.get('Typ', 'N/A')
+        header_text = f"{tg_code_val} - {marke_val} - {typ_val}"
+        self.cell(0, 8, header_text, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
+        self.ln(8) # Space after header
+
+        # --- Body Content ---
+        page_width = self.w - self.l_margin - self.r_margin
+        value_width = page_width - config.PDF_LABEL_WIDTH
+
+        if value_width <= 0:
+             print("Error: Calculated width for value column is zero or negative.")
+             return # Cannot proceed
+
+        for item_name in config.DISPLAY_ORDER_WITH_DIVIDERS:
+            if item_name == config.DIVIDER_MARKER:
+                self.ln(config.PDF_DIVIDER_MARGIN)
+                self.set_draw_color(180, 180, 180)
+                self.set_line_width(config.PDF_DIVIDER_THICKNESS)
+                self.line(self.l_margin, self.get_y(), self.l_margin + page_width, self.get_y())
+                self.ln(config.PDF_DIVIDER_MARGIN)
+                continue
+
+            # Skip header items already printed
+            if item_name in ['TG_Code', 'Marke', 'Typ']:
+                continue
+
+            # Get the pre-formatted value
+            display_value = formatted_data.get(item_name, "") # Default to empty string
+
+            # --- Add Label and Value to PDF ---
+            self.set_x(self.l_margin)
+            start_y = self.get_y()
+
+            # Label (Bold) - Translate the item_name
+            self.set_font(self.font_family, 'B', config.PDF_FONT_SIZE_BODY) # Use self.font_family
+            translated_label = translation._(item_name) # Translate the label
+            self.multi_cell(config.PDF_LABEL_WIDTH, config.PDF_LINE_HEIGHT, f"{translated_label}:",
+                            border=0, align='L', new_x=XPos.RIGHT, new_y=YPos.TOP)
+            label_end_y = self.get_y() # Y position after label cell
+
+            # Value (Regular) - Position next to label
+            self.set_xy(self.l_margin + config.PDF_LABEL_WIDTH, start_y) # Set position explicitly
+            self.set_font(self.font_family, '', config.PDF_FONT_SIZE_BODY) # Use self.font_family
+            self.multi_cell(value_width, config.PDF_LINE_HEIGHT, display_value,
+                            border=0, align='L', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+            value_end_y = self.get_y() # Y position after value cell
+
+            # Ensure the next line starts below the taller of the two cells
+            new_y = max(label_end_y, value_end_y, start_y + config.PDF_LINE_HEIGHT)
+            self.set_y(new_y)
 
 
-# --- PDF Generation Function (MODIFIED for Translations) ---
+# --- Main PDF Creation Function ---
+def create_single_pdf(raw_data_row, output_filename):
+    """Creates a formatted PDF for a single vehicle."""
+    if not raw_data_row:
+        print("Error: No data provided to create PDF.")
+        return False
 
-def create_pdf(result_row, normalized_mapping, output_filename):
-    """Creates a formatted PDF from the result row with side-by-side layout."""
     try:
-        pdf = FPDF()
+        # 1. Format the raw data (formatting.py now handles value translations)
+        formatted_data = formatting.format_vehicle_data(raw_data_row)
+        if not formatted_data:
+             print("Error: Formatting failed, cannot create PDF.")
+             return False
+
+        # 2. Initialize PDF
+        pdf = PDFSingle()
+        # --- Font Handling ---
+        font_family_to_use = config.PDF_FONT_FALLBACK # Start with fallback
+        try:
+            # Use paths from config
+            font_path = get_resource_path(config.FONT_REGULAR_PATH)
+            bold_font_path = get_resource_path(config.FONT_BOLD_PATH)
+            italic_font_path = get_resource_path(config.FONT_ITALIC_PATH)
+            bold_italic_font_path = get_resource_path(config.FONT_BOLD_ITALIC_PATH)
+
+            # Check if all required font files exist
+            if all(os.path.exists(p) for p in [font_path, bold_font_path, italic_font_path, bold_italic_font_path]):
+                pdf.add_font(config.PDF_FONT_NAME_DEJAVU, '', font_path)
+                pdf.add_font(config.PDF_FONT_NAME_DEJAVU, 'B', bold_font_path)
+                pdf.add_font(config.PDF_FONT_NAME_DEJAVU, 'I', italic_font_path)
+                pdf.add_font(config.PDF_FONT_NAME_DEJAVU, 'BI', bold_italic_font_path)
+                font_family_to_use = config.PDF_FONT_NAME_DEJAVU # Switch to DejaVu
+                print("Using DejaVu font for PDF.")
+            else:
+                 print(f"Warning: One or more DejaVu font files not found in '{config.FONT_DIR}'. Using fallback {font_family_to_use}.")
+        except Exception as font_err: # Catch FPDF font errors or other issues
+            print(f"Warning: Failed to load DejaVu font ({font_err}). Using fallback {font_family_to_use}.")
+
+        # Set the chosen font family (either DejaVu or Fallback)
+        pdf.set_font(font_family_to_use, '', config.PDF_FONT_SIZE_BODY)
+
+
         pdf.add_page()
         pdf.set_margins(left=15, top=15, right=15)
         pdf.set_auto_page_break(auto=True, margin=15)
 
-        # --- Title ---
-        pdf.set_font(PDF_FONT, 'B', PDF_FONT_SIZE_TITLE)
-        pdf.cell(0, 10, PDF_TITLE, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
-        pdf.ln(5) # Space after title
+        # 3. Add content using the formatted data
+        pdf.add_vehicle_details(formatted_data)
 
-        # --- Header (TG_Code, Marke, Typ) ---
-        pdf.set_font(PDF_FONT, 'B', PDF_FONT_SIZE_HEADER)
-        header_text = f"{result_row['TG_Code']} - {result_row['Marke']} - {result_row['Typ']}"
-        pdf.cell(0, 8, header_text, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
-        pdf.ln(8) # Space after header
-
-        # --- Body Content ---
-        available_columns = result_row.keys()
-        page_width = pdf.w - pdf.l_margin - pdf.r_margin
-        value_width = page_width - PDF_LABEL_WIDTH
-
-        if value_width <= 0:
-             print("Error: Calculated width for value column is zero or negative.")
-             return
-
-        for item_name in DISPLAY_ORDER_WITH_DIVIDERS:
-            if item_name == DIVIDER_MARKER:
-                pdf.ln(PDF_DIVIDER_MARGIN)
-                pdf.set_draw_color(180, 180, 180)
-                pdf.set_line_width(PDF_DIVIDER_THICKNESS)
-                pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + page_width, pdf.get_y())
-                pdf.ln(PDF_DIVIDER_MARGIN)
-                continue
-
-            col_name = item_name
-
-            if col_name in ['TG_Code', 'Marke', 'Typ']:
-                continue
-
-            value = None
-            display_name = col_name
-            if col_name not in available_columns:
-                 cleaned_col_name_check = clean_sql_identifier(col_name)
-                 if cleaned_col_name_check not in available_columns:
-                     continue
-                 else:
-                     value = result_row[cleaned_col_name_check]
-            else:
-                value = result_row[col_name]
-
-            cleaned_col_name_for_check = clean_sql_identifier(col_name)
-            if cleaned_col_name_for_check in OMIT_COLUMNS_CLEANED:
-                continue
-
-            # Format the value
-            display_value = ""
-            is_leistung = (cleaned_col_name_for_check == 'Leistung')
-            is_antrieb = (cleaned_col_name_for_check == 'Antrieb')
-            is_treibstoff = (cleaned_col_name_for_check == 'Treibstoff')
-
-            if cleaned_col_name_for_check == 'Homologationsdatum':
-                if value:
-                    try:
-                        date_obj = datetime.strptime(str(value), HOMOLOGATIONSDATUM_INPUT_FORMAT)
-                        display_value = date_obj.strftime(HOMOLOGATIONSDATUM_OUTPUT_FORMAT)
-                    except (ValueError, TypeError): display_value = f"{value} (format?)"
-            elif isinstance(value, str) and value == '(leer)': display_value = ""
-            elif value is not None: display_value = str(value)
-
-            # --- Apply Translations (Antrieb, Treibstoff) ---
-            if is_antrieb and display_value:
-                # Use imported ANTRIEB_MAP
-                display_value = ANTRIEB_MAP.get(display_value, display_value)
-            elif is_treibstoff and display_value:
-                # Use imported TREIBSTOFF_MAP
-                display_value = TREIBSTOFF_MAP.get(display_value, display_value)
-
-            # --- Add Units / Calculate PS ---
-            cleaned_col_name_for_units = cleaned_col_name_for_check
-
-            if is_leistung and display_value:
-                try:
-                    kw_str = display_value.split(' ')[0]
-                    kw_value_float = float(kw_str)
-                    ps_value = kw_value_float * KW_TO_PS
-                    ps_value_formatted = f"{ps_value:.1f}"
-                    display_value = f"{kw_str} kW / {ps_value_formatted} PS"
-                except ValueError:
-                    display_value = f"{display_value} kW (Invalid number)"
-            elif display_value and cleaned_col_name_for_units in UNITS_MAP and not is_leistung:
-                display_value = f"{display_value} {UNITS_MAP[cleaned_col_name_for_units]}"
-
-            # --- Add Label and Value to PDF ---
-            pdf.set_x(pdf.l_margin)
-            start_y = pdf.get_y()
-            pdf.set_font(PDF_FONT, 'B', PDF_FONT_SIZE_BODY)
-            pdf.multi_cell(PDF_LABEL_WIDTH, PDF_LINE_HEIGHT, f"{display_name}:", border=0, align='L', new_x=XPos.RIGHT, new_y=YPos.TOP)
-            label_end_y = pdf.get_y()
-            pdf.set_xy(pdf.l_margin + PDF_LABEL_WIDTH, start_y)
-            pdf.set_font(PDF_FONT, '', PDF_FONT_SIZE_BODY)
-            pdf.multi_cell(value_width, PDF_LINE_HEIGHT, display_value, border=0, align='L', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
-            value_end_y = pdf.get_y()
-            new_y = max(label_end_y, value_end_y, start_y + PDF_LINE_HEIGHT)
-            pdf.set_y(new_y)
-
-        # --- Save the PDF ---
+        # 4. Save the PDF
         pdf.output(output_filename)
         print(f"PDF exported successfully to '{output_filename}'")
+        return True
 
     except ImportError:
          print("Error: FPDF library not found. Please install it using: pip install fpdf2")
+         return False
     except Exception as e:
         print(f"An error occurred during PDF generation: {e}")
+        import traceback
+        traceback.print_exc() # Print detailed traceback for debugging
+        return False
 
 
-# --- Main Execution ---
-
+# --- Main Execution (CLI) ---
+# (CLI part remains unchanged, uses the updated create_single_pdf)
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python export_pdf.py <TG-Code>")
+        print(f"Usage: python {os.path.basename(__file__)} <TG-Code>")
         sys.exit(1)
 
     tg_code_input = sys.argv[1]
 
     print(f"Searching for TG-Code: {tg_code_input}...")
-    data_row, norm_map = search_by_tg_code(tg_code_input)
+    raw_data_row = database.search_by_tg_code(tg_code_input)
 
-    if data_row:
+    if raw_data_row:
         try:
-            os.makedirs(EXPORT_DIR, exist_ok=True)
+            # Ensure export directory exists
+            os.makedirs(config.EXPORT_DIR_SINGLE, exist_ok=True)
+
+            # Create filename
             cleaned_name_part = clean_sql_identifier(tg_code_input)
-            safe_filename_part = cleaned_name_part.lstrip('_')
+            safe_filename_part = cleaned_name_part.lstrip('_') # Avoid leading underscore
             base_filename = f"{safe_filename_part}.pdf"
-            full_pdf_path = os.path.join(EXPORT_DIR, base_filename)
+            full_pdf_path = os.path.join(config.EXPORT_DIR_SINGLE, base_filename)
+
             print(f"Data found. Generating PDF: '{full_pdf_path}'...")
-            create_pdf(data_row, norm_map, full_pdf_path)
+            # Initialize translations for CLI run (using default language)
+            translation.initialize_translations()
+            success = create_single_pdf(raw_data_row, full_pdf_path)
+            if not success:
+                 sys.exit(1) # Exit with error code if PDF generation failed
+
         except OSError as e:
-            print(f"Error creating directory '{EXPORT_DIR}': {e}")
+            print(f"Error creating directory '{config.EXPORT_DIR_SINGLE}': {e}")
+            sys.exit(1)
         except Exception as e:
-             print(f"An error occurred before or during PDF generation: {e}")
+             print(f"An error occurred: {e}")
+             sys.exit(1)
     else:
         print(f"No data found for TG-Code '{tg_code_input}'.")
-
+        sys.exit(1)

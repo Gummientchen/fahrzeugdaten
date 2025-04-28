@@ -5,162 +5,30 @@ from tkinter import ttk, scrolledtext, messagebox, font
 import threading
 import os
 import sys
-import json # Import json module
+import json
 from datetime import datetime
-import requests
-import subprocess # <--- MAKE SURE THIS IS IMPORTED
+import requests # Still needed for exception type hinting
+import subprocess
 
-# --- Constants ---
-LANG_DIR = "lang"
-DEFAULT_LANG = "en" # Default language
-SUPPORTED_LANGS = {
-    "en": "English",
-    "de": "Deutsch",
-    "fr": "Français",  # Added French
-    "it": "Italiano"   # Added Italian
-}
-
-# --- Global translation dictionary and current language ---
-translations = {}
-current_language = DEFAULT_LANG
-
-def get_resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
-    try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
-        base_path = sys._MEIPASS
-    except Exception:
-        # Not running in a bundle, use the script's directory
-        base_path = os.path.abspath(os.path.dirname(__file__))
-
-    return os.path.join(base_path, relative_path)
-
-# --- Translation Loading Function (MODIFIED) ---
-def load_translations(lang_code):
-    global translations, current_language
-    # MODIFIED: Use get_resource_path
-    relative_filepath = os.path.join(LANG_DIR, f"{lang_code}.json")
-    filepath = get_resource_path(relative_filepath)
-
-    # Add print for debugging
-    # print(f"Attempting to load language file from: {filepath}") # Keep commented out unless debugging
-
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            translations = json.load(f)
-        current_language = lang_code
-        # print(f"Successfully loaded translations for: {lang_code}") # Keep commented out unless debugging
-        return True
-    except FileNotFoundError:
-        print(f"ERROR: Language file not found: {filepath}") # Show the path it tried
-        if lang_code != "en": # Try falling back to English
-             print("Falling back to English.")
-             return load_translations("en")
-        translations = {} # Clear translations if even English fails
-        return False
-    except json.JSONDecodeError as e:
-        print(f"ERROR: Failed to parse language file {filepath}: {e}")
-        translations = {}
-        return False
-    except Exception as e:
-        print(f"ERROR: Unexpected error loading language file {filepath}: {e}")
-        translations = {}
-        return False
-
-
-# --- Translation Helper Function (MODIFIED) ---
-def _(key, **kwargs):
-    """Gets the translated string for a key, falling back to the key itself."""
-    lookup_translations = translations
-    if 'lang' in kwargs:
-        lang_code_override = kwargs.pop('lang')
-        temp_translations = {}
-        # MODIFIED: Use get_resource_path for override path
-        relative_filepath = os.path.join(LANG_DIR, f"{lang_code_override}.json")
-        filepath = get_resource_path(relative_filepath)
-        try:
-            # Add print for debugging override path
-            # print(f"Attempting to load override language file from: {filepath}") # Keep commented out unless debugging
-            with open(filepath, 'r', encoding='utf-8') as f:
-                temp_translations = json.load(f)
-            lookup_translations = temp_translations
-            # print(f"Successfully loaded override language: {lang_code_override}") # Keep commented out unless debugging
-        except Exception as e:
-            # Fallback to current translations if override file fails
-            print(f"Warning: Failed to load override language file '{filepath}': {e}")
-            pass # lookup_translations remains the global 'translations'
-
-    message = lookup_translations.get(key, f"[{key}]") # Get message or show [key] if missing
-    if kwargs:
-        try:
-            message = message.format(**kwargs) # Fill placeholders
-        except KeyError as e:
-            print(f"Warning: Missing placeholder {e} in translation for key '{key}'")
-        except Exception as e:
-            print(f"Warning: Error formatting translation for key '{key}': {e}") # Catch other formatting errors
-    return message
-
-
-
-# --- Load initial translations ---
-load_translations(DEFAULT_LANG)
-
-
-# --- Attempt to import functions from other scripts ---
-script_dir = os.path.dirname(os.path.abspath(__file__))
-if script_dir not in sys.path:
-    sys.path.insert(0, script_dir)
-
-try:
-    from importer import main as run_import_main
-    from search import (
-        search_by_tg_code, DATABASE_PATH, DISPLAY_ORDER_WITH_DIVIDERS,
-        DIVIDER_MARKER, UNITS_MAP, KW_TO_PS, HOMOLOGATIONSDATUM_INPUT_FORMAT,
-        HOMOLOGATIONSDATUM_OUTPUT_FORMAT, ANTRIEB_MAP, TREIBSTOFF_MAP,
-        OMIT_COLUMNS_CLEANED, clean_sql_identifier
-    )
-    from export import create_pdf as export_single_pdf, EXPORT_DIR as EXPORT_DIR_SINGLE
-    from compare import (
-        get_formatted_car_data, generate_comparison_pdf,
-        EXPORT_DIR as EXPORT_DIR_COMPARE
-    )
-except ImportError as e:
-    print(f"ERROR: Failed to import required modules: {e}")
-    print("Please ensure importer.py, search.py, export.py, and compare.py are in the same directory.")
-    print("Also ensure dependencies (fpdf2, requests) are installed: pip install fpdf2 requests")
-    try:
-        root_err = tk.Tk()
-        root_err.withdraw()
-        messagebox.showerror(_("msg_title_import_error"), f"Failed to import required modules: {e}\n\nPlease ensure required .py files are present and dependencies (fpdf2, requests) are installed.")
-        root_err.destroy()
-    except tk.TclError: pass
-    sys.exit(1)
-except Exception as e:
-     print(f"ERROR: An unexpected error occurred during imports: {e}")
-     try:
-        root_err = tk.Tk()
-        root_err.withdraw()
-        messagebox.showerror(_("msg_title_import_error"), f"An unexpected error occurred during imports: {e}")
-        root_err.destroy()
-     except tk.TclError: pass
-     sys.exit(1)
-
+# Import refactored components
+import config
+import database
+import formatting
+import importer
+import export
+import compare
+import translation # Import the new translation module
+from utils import get_resource_path, clean_sql_identifier
 
 # --- GUI Application Class ---
-
 class VehicleDataApp:
     def __init__(self, root):
-        # --- FIX: Assign root to self.root FIRST ---
         self.root = root
-        # --- End FIX ---
-
         self.waiting_dialog = None
         self.import_running_at_startup = False
         self.progress_var = tk.DoubleVar()
         self.progress_bar = None
         self.progress_label_var = tk.StringVar()
-        self.current_search_data = None # Still useful for display, but export won't rely on it
-        # self.previous_translations = {} # Keep for menu items like Exit/Import - Not strictly needed with index 0 assumption
 
         # --- Styling ---
         self.style = ttk.Style()
@@ -173,17 +41,17 @@ class VehicleDataApp:
         self.menubar = tk.Menu(self.root)
         self.root.config(menu=self.menubar)
 
-        # --- Create the menus THEMSELVES once ---
+        # --- Create Menus ---
         self.file_menu = tk.Menu(self.menubar, tearoff=0)
         self.data_menu = tk.Menu(self.menubar, tearoff=0)
         self.language_menu = tk.Menu(self.menubar, tearoff=0)
 
-        # --- Populate the menus (commands, radiobuttons) ---
-        # Use placeholders that will be updated by _update_ui_text
+        # --- Populate Menus ---
         self.file_menu.add_command(label="TEMP_EXIT", command=self.root.quit)
         self.data_menu.add_command(label="TEMP_IMPORT", command=self._run_import_thread)
-        self.selected_language_var = tk.StringVar(value=current_language)
-        for code, name in SUPPORTED_LANGS.items():
+        # Use current_language from translation module after initialization
+        self.selected_language_var = tk.StringVar(value=translation.current_language)
+        for code, name in config.SUPPORTED_LANGS.items():
              self.language_menu.add_radiobutton(
                  label=name, variable=self.selected_language_var, value=code,
                  command=lambda c=code: self.change_language(c)
@@ -194,31 +62,31 @@ class VehicleDataApp:
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # --- Compare Section ---
-        self.compare_frame = ttk.LabelFrame(main_frame, text="TEMP_COMPARE", padding="10") # Placeholder
+        self.compare_frame = ttk.LabelFrame(main_frame, text="TEMP_COMPARE", padding="10")
         self.compare_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(5,0))
         compare_input_frame = ttk.Frame(self.compare_frame)
         compare_input_frame.pack(fill=tk.X)
-        self.compare_tg_codes_label = ttk.Label(compare_input_frame, text="TEMP_COMPARE_LABEL") # Placeholder
+        self.compare_tg_codes_label = ttk.Label(compare_input_frame, text="TEMP_COMPARE_LABEL")
         self.compare_tg_codes_label.pack(side=tk.LEFT, padx=5)
         self.compare_tg_codes_entry = ttk.Entry(compare_input_frame, width=40)
         self.compare_tg_codes_entry.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
-        self.compare_button = ttk.Button(self.compare_frame, text="TEMP_COMPARE_BTN", command=self._compare_vehicles) # Placeholder
+        self.compare_button = ttk.Button(self.compare_frame, text="TEMP_COMPARE_BTN", command=self._compare_vehicles)
         self.compare_button.pack(pady=5)
 
         # --- Search/Export Section ---
-        self.search_frame = ttk.LabelFrame(main_frame, text="TEMP_SEARCH", padding="10") # Placeholder
+        self.search_frame = ttk.LabelFrame(main_frame, text="TEMP_SEARCH", padding="10")
         self.search_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0,5))
         search_input_frame = ttk.Frame(self.search_frame)
         search_input_frame.pack(side=tk.TOP, fill=tk.X)
-        self.tg_code_search_label = ttk.Label(search_input_frame, text="TEMP_TG_CODE") # Placeholder
+        self.tg_code_search_label = ttk.Label(search_input_frame, text="TEMP_TG_CODE")
         self.tg_code_search_label.pack(side=tk.LEFT, padx=5)
         self.search_tg_code_entry = ttk.Entry(search_input_frame, width=20)
         self.search_tg_code_entry.pack(side=tk.LEFT, padx=5, expand=True, fill=tk.X)
         search_button_frame = ttk.Frame(self.search_frame)
         search_button_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
-        self.search_button = ttk.Button(search_button_frame, text="TEMP_SEARCH_BTN", command=self._search_vehicle) # Placeholder
+        self.search_button = ttk.Button(search_button_frame, text="TEMP_SEARCH_BTN", command=self._search_vehicle)
         self.search_button.pack(side=tk.LEFT, padx=5)
-        self.export_button = ttk.Button(search_button_frame, text="TEMP_EXPORT_BTN", command=self._export_vehicle_pdf) # Placeholder
+        self.export_button = ttk.Button(search_button_frame, text="TEMP_EXPORT_BTN", command=self._export_vehicle_pdf)
         self.export_button.pack(side=tk.LEFT, padx=5)
         self.search_results_text = scrolledtext.ScrolledText(self.search_frame, height=25, width=80, wrap=tk.WORD, state=tk.DISABLED, font=("Courier New", 9))
         self.search_results_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0,5))
@@ -228,614 +96,464 @@ class VehicleDataApp:
         self.status_bar = ttk.Label(root, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W, padding="2 5")
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # --- Apply initial UI text (which includes building the menubar) ---
-        self._update_ui_text() # This will now call _build_menubar
+        # --- Apply initial UI text ---
+        self._update_ui_text() # Uses translation._ internally now
 
-
-    # --- NEW METHOD to build/rebuild menubar cascades ---
+    # --- UI Update Methods ---
     def _build_menubar(self):
         """Deletes and rebuilds the main menubar cascades with current translations."""
-        # Delete existing cascades first (if any)
-        # Using index('end') is safer than hardcoding range
-        try:
+        try: # Clear existing cascades first
             last_index = self.menubar.index(tk.END)
-            # Iterate backwards to avoid index shifting issues when deleting
-            for i in range(last_index, -1, -1):
-                try:
-                    self.menubar.delete(i)
-                except tk.TclError as e:
-                    # This might happen if the menu is already empty, usually safe to ignore
-                    # print(f"Info: Could not delete menu cascade at index {i} (might be empty): {e}") # Optional debug
-                    pass # Ignore errors during deletion, menu might be empty
-        except tk.TclError:
-             # Menu might be completely empty, index(tk.END) fails
-             pass # Safe to ignore
+            if last_index is not None:
+                for i in range(last_index, -1, -1): self.menubar.delete(i)
+        except tk.TclError: pass # Ignore if menu is empty
 
-        # Add cascades with current translations
-        self.menubar.add_cascade(label=_("file_menu"), menu=self.file_menu)
-        self.menubar.add_cascade(label=_("data_menu"), menu=self.data_menu)
-        self.menubar.add_cascade(label=_("language_menu"), menu=self.language_menu)
-        # print(f"DEBUG: Rebuilt menubar with: '{_('file_menu')}', '{_('data_menu')}', '{_('language_menu')}'") # Optional debug
+        # Add cascades using translation._
+        self.menubar.add_cascade(label=translation._("file_menu"), menu=self.file_menu)
+        self.menubar.add_cascade(label=translation._("data_menu"), menu=self.data_menu)
+        self.menubar.add_cascade(label=translation._("language_menu"), menu=self.language_menu)
 
-
-    # --- Update UI Text (MODIFIED) ---
     def _update_ui_text(self):
         """Updates static text elements in the UI based on current language."""
-        self.root.title(_("window_title"))
+        # Use translation._ for all UI text
+        self.root.title(translation._("window_title"))
+        self._build_menubar() # Rebuild menu cascade labels
 
-        # --- Rebuild Menubar Cascade Labels ---
-        # This is the reliable way to update the top-level menu labels
-        self._build_menubar()
+        # Update menu item labels
+        try: self.file_menu.entryconfig(0, label=translation._("exit_menu"))
+        except tk.TclError: print("Warning: Could not update 'Exit' menu item.")
+        try: self.data_menu.entryconfig(0, label=translation._("import_menu"))
+        except tk.TclError: print("Warning: Could not update 'Import' menu item.")
 
-        # --- Update ITEMS WITHIN menus ---
-        # Assume Exit is always the first item (index 0) in file_menu
-        try:
-            self.file_menu.entryconfig(0, label=_("exit_menu"))
-            # print(f"DEBUG: Updated Exit menu item using index 0") # Optional debug
-        except tk.TclError as e:
-             print(f"Warning: Could not find/update 'Exit' menu item at index 0: {e}")
+        # Update other widgets
+        self.search_frame.config(text=translation._("search_export_frame"))
+        self.compare_frame.config(text=translation._("compare_frame"))
+        self.tg_code_search_label.config(text=translation._("tg_code_label"))
+        self.compare_tg_codes_label.config(text=translation._("compare_tg_codes_label"))
+        self.search_button.config(text=translation._("search_button"))
+        self.export_button.config(text=translation._("export_pdf_button"))
+        self.compare_button.config(text=translation._("compare_button"))
 
-        # Assume Import is always the first item (index 0) in data_menu
-        try:
-            self.data_menu.entryconfig(0, label=_("import_menu"))
-            # print(f"DEBUG: Updated Import menu item using index 0") # Optional debug
-        except tk.TclError as e:
-             print(f"Warning: Could not find/update 'Import' menu item at index 0: {e}")
-
-        # Update LabelFrames
-        self.search_frame.config(text=_("search_export_frame"))
-        self.compare_frame.config(text=_("compare_frame"))
-
-        # Update Labels
-        self.tg_code_search_label.config(text=_("tg_code_label"))
-        self.compare_tg_codes_label.config(text=_("compare_tg_codes_label"))
-
-        # Update Buttons
-        self.search_button.config(text=_("search_button"))
-        self.export_button.config(text=_("export_pdf_button"))
-        self.compare_button.config(text=_("compare_button"))
-
-        # Update Status Bar (initial state or safe default)
+        # Update status bar only if it's showing a default message
         current_status = self.status_var.get()
-        # Check if status is empty, a placeholder, or the 'Ready' message in any known language
-        is_default_status = (
-            not current_status or
-            current_status.startswith("[") or
-            any(current_status == _("status_ready", lang=lang_code) for lang_code in SUPPORTED_LANGS)
-        )
-        if is_default_status:
-             self.status_var.set(_("status_ready"))
-        # Otherwise, leave the current status (e.g., "Importing...") as is
+        # Check against default message in *current* language
+        is_default_status = (not current_status or current_status.startswith("[") or
+                             current_status == translation._("status_ready"))
+        if is_default_status: self.status_var.set(translation._("status_ready"))
 
-        # Update Waiting Dialog Text (if open)
-        if self.waiting_dialog is not None and self.waiting_dialog.winfo_exists():
-             self.waiting_dialog.title(_("waiting_dialog_title"))
-             # Find the main label within the dialog frame
+        # Update waiting dialog if open
+        if self.waiting_dialog and self.waiting_dialog.winfo_exists():
+             self.waiting_dialog.title(translation._("waiting_dialog_title"))
              for widget in self.waiting_dialog.winfo_children():
                  if isinstance(widget, ttk.Frame):
                      for sub_widget in widget.winfo_children():
-                         # Check if it's a Label and not the progress percentage label
-                         if isinstance(sub_widget, ttk.Label) and hasattr(sub_widget, 'cget'):
-                             current_text = sub_widget.cget("text")
-                             is_progress_label = "%" in current_text or "..." in current_text
-                             if not is_progress_label:
-                                 label_text = _("waiting_dialog_init") if self.import_running_at_startup else _("waiting_dialog_update")
-                                 sub_widget.config(text=label_text)
-                                 break # Found and updated the main label
-                     break # Stop searching after the main frame
+                         if isinstance(sub_widget, ttk.Label) and "%" not in sub_widget.cget("text") and "..." not in sub_widget.cget("text"):
+                             label_text = translation._("waiting_dialog_init") if self.import_running_at_startup else translation._("waiting_dialog_update")
+                             sub_widget.config(text=label_text)
+                             break
+                     break
 
-
-    # --- Change Language ---
     def change_language(self, lang_code):
-        """Loads new translations and updates the UI text elements."""
-        # No need to store previous_translations for cascade labels with rebuild approach
-        # self.previous_translations = translations.copy()
+        """Sets the new language using the translation module and updates the UI."""
+        # Use translation.set_language which handles loading
+        if translation.set_language(lang_code):
+            # Update the UI using the new translations (static elements)
+            self._update_ui_text()
+            # Update the radio button variable state
+            self.selected_language_var.set(lang_code)
 
-        if load_translations(lang_code):
-            # Update the UI using the new translations
-            self._update_ui_text() # This will now trigger _build_menubar
+            # --- Re-run search if there's a TG-Code in the entry ---
+            tg_code_in_entry = self.search_tg_code_entry.get().strip()
+            if tg_code_in_entry:
+                # Clear the current text area first for a cleaner update
+                self.search_results_text.config(state=tk.NORMAL)
+                self.search_results_text.delete('1.0', tk.END)
+                self.search_results_text.config(state=tk.DISABLED)
+                # Re-run the search logic - it will fetch data and format using the new language
+                # This will update the search_results_text widget
+                self._search_vehicle()
+            # --- END Re-run search ---
+
         else:
-            # Use translated error title
-            messagebox.showerror(_("msg_title_import_error"), f"Could not load language: {lang_code}")
+            # Show error using the *current* language's translation
+            messagebox.showerror(translation._("msg_title_import_error"), f"Could not load language: {lang_code}")
+            # Optionally reset radio button to actual current language
+            self.selected_language_var.set(translation.current_language)
 
 
-    # --- Helper Methods ---
+    # --- Helper Methods (Messaging, Status) ---
     def _update_status(self, message_key, **kwargs):
-        translated_message = _(message_key, **kwargs)
+        """Updates the status bar text (thread-safe)."""
+        # Use translation._
+        translated_message = translation._(message_key, **kwargs)
         self.root.after(0, self.status_var.set, translated_message)
 
     def _show_error(self, title_key, message_key, **kwargs):
-        title = _(title_key); message = _(message_key, **kwargs)
+        """Shows an error message box (thread-safe)."""
+        # Use translation._
+        title = translation._(title_key); message = translation._(message_key, **kwargs)
         self.root.after(0, messagebox.showerror, title, message)
 
     def _show_info(self, title_key, message_key, **kwargs):
-        title = _(title_key); message = _(message_key, **kwargs)
+        """Shows an info message box (thread-safe)."""
+        # Use translation._
+        title = translation._(title_key); message = translation._(message_key, **kwargs)
         self.root.after(0, messagebox.showinfo, title, message)
 
     # --- Waiting Dialog ---
     def _show_waiting_dialog(self):
-        if self.waiting_dialog is not None and self.waiting_dialog.winfo_exists(): return
+        """Displays the modal progress dialog."""
+        if self.waiting_dialog and self.waiting_dialog.winfo_exists(): return
         self.waiting_dialog = tk.Toplevel(self.root)
-        self.waiting_dialog.title(_("waiting_dialog_title")) # Use translation
+        # Use translation._
+        self.waiting_dialog.title(translation._("waiting_dialog_title"))
         self.waiting_dialog.geometry("350x150"); self.waiting_dialog.resizable(False, False)
-        self.waiting_dialog.transient(self.root); self.waiting_dialog.protocol("WM_DELETE_WINDOW", lambda: None) # Prevent closing
-        # Center dialog relative to root window
-        self.root.update_idletasks() # Ensure root window dimensions are up-to-date
-        root_x = self.root.winfo_rootx(); root_y = self.root.winfo_rooty()
-        root_w = self.root.winfo_width(); root_h = self.root.winfo_height()
-        dialog_w = 350; dialog_h = 150
-        x = root_x + (root_w // 2) - (dialog_w // 2); y = root_y + (root_h // 2) - (dialog_h // 2)
-        x, y = int(x), int(y) # Ensure integer coordinates
-        self.waiting_dialog.geometry(f"+{x}+{y}") # Position the dialog
+        self.waiting_dialog.transient(self.root); self.waiting_dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        # Center dialog
+        self.root.update_idletasks()
+        root_x, root_y = self.root.winfo_rootx(), self.root.winfo_rooty()
+        root_w, root_h = self.root.winfo_width(), self.root.winfo_height()
+        dialog_w, dialog_h = 350, 150
+        x = int(root_x + (root_w / 2) - (dialog_w / 2))
+        y = int(root_y + (root_h / 2) - (dialog_h / 2))
+        self.waiting_dialog.geometry(f"+{x}+{y}")
 
         dialog_frame = ttk.Frame(self.waiting_dialog, padding="10"); dialog_frame.pack(expand=True, fill=tk.BOTH)
-        label_text = _("waiting_dialog_init") if self.import_running_at_startup else _("waiting_dialog_update")
-        wait_label = ttk.Label(dialog_frame, text=label_text, justify=tk.CENTER); wait_label.pack(pady=(0, 10))
+        # Use translation._
+        label_text = translation._("waiting_dialog_init") if self.import_running_at_startup else translation._("waiting_dialog_update")
+        ttk.Label(dialog_frame, text=label_text, justify=tk.CENTER).pack(pady=(0, 10))
         self.progress_bar = ttk.Progressbar(dialog_frame, orient='horizontal', mode='determinate', variable=self.progress_var, maximum=100.0)
         self.progress_bar.pack(fill=tk.X, padx=10, pady=5)
-        initial_progress_text = _("progress_percent", percentage=0.0); self.progress_label_var.set(initial_progress_text)
-        progress_text_label = ttk.Label(dialog_frame, textvariable=self.progress_label_var); progress_text_label.pack(pady=(0, 5))
+        # Use translation._
+        initial_progress_text = translation._("progress_percent", percentage=0.0); self.progress_label_var.set(initial_progress_text)
+        ttk.Label(dialog_frame, textvariable=self.progress_label_var).pack(pady=(0, 5))
         self.progress_var.set(0.0)
-        self.waiting_dialog.grab_set(); self.root.update_idletasks() # Make modal
+        self.waiting_dialog.grab_set(); self.root.update_idletasks()
 
     def _close_waiting_dialog(self):
-        if self.waiting_dialog is not None and self.waiting_dialog.winfo_exists():
+        """Closes the modal progress dialog."""
+        if self.waiting_dialog and self.waiting_dialog.winfo_exists():
             self.waiting_dialog.grab_release(); self.waiting_dialog.destroy()
             self.waiting_dialog = None; self.progress_bar = None
 
-    # --- Progress Update Callback ---
     def _update_progress(self, current_row, total_rows):
+        """Callback function to update the progress bar (thread-safe)."""
         if total_rows > 0:
             percentage = min((current_row / total_rows) * 100.0, 100.0)
-            # Format with one decimal place using the translated string
-            progress_text = _("progress_percent", percentage=percentage)
+            # Use translation._ (already corrected to pass float)
+            progress_text = translation._("progress_percent", percentage=percentage)
             self.root.after(0, self.progress_var.set, percentage)
             self.root.after(0, self.progress_label_var.set, progress_text)
-        else:
-            # Indeterminate progress
-            progress_text = _("progress_ellipsis") # Use translated ellipsis text
-            self.root.after(0, self.progress_var.set, 0.0) # Or maybe set mode to indeterminate if desired
+            if self.progress_bar and self.progress_bar.cget('mode') == 'indeterminate':
+                 self.root.after(0, self.progress_bar.config, {'mode': 'determinate'})
+        else: # Indeterminate progress
+            # Use translation._
+            progress_text = translation._("progress_ellipsis")
+            self.root.after(0, self.progress_var.set, 0)
             self.root.after(0, self.progress_label_var.set, progress_text)
-            # Optionally switch progress bar mode
-            # if self.progress_bar: self.root.after(0, self.progress_bar.config, {'mode': 'indeterminate'})
+            if self.progress_bar and self.progress_bar.cget('mode') == 'determinate':
+                 self.root.after(0, self.progress_bar.config, {'mode': 'indeterminate'})
+                 self.root.after(0, self.progress_bar.start)
 
+
+    # --- Core Application Logic ---
 
     # --- Import Handling ---
     def _run_import_thread(self, is_startup=False):
+        """Starts the import process in a background thread."""
         self.import_running_at_startup = is_startup
-        # Find index using current language text before disabling
-        # Assuming Import is always the first item in the Data menu (index 0)
-        try:
-            self.data_menu.entryconfig(0, state=tk.DISABLED)
-        except tk.TclError:
-            print("Warning: Could not disable Import menu item at index 0.")
+        try: self.data_menu.entryconfig(0, state=tk.DISABLED)
+        except tk.TclError: pass
+        self.search_button.config(state=tk.DISABLED)
+        self.export_button.config(state=tk.DISABLED)
+        self.compare_button.config(state=tk.DISABLED)
 
-
-        self.search_button.config(state=tk.DISABLED); self.export_button.config(state=tk.DISABLED); self.compare_button.config(state=tk.DISABLED)
         self._update_status("status_import_starting")
         self._show_waiting_dialog()
-        self.progress_var.set(0.0); self.progress_label_var.set(_("progress_percent", percentage=0.0))
-        if self.progress_bar: self.root.after(0, self.progress_bar.config, {'mode': 'determinate'}) # Ensure determinate mode
-        import_thread = threading.Thread(target=self._execute_import, daemon=True); import_thread.start()
+        self.progress_var.set(0.0)
+        # Use translation._
+        self.progress_label_var.set(translation._("progress_percent", percentage=0.0))
+        if self.progress_bar: self.root.after(0, self.progress_bar.config, {'mode': 'determinate'})
+
+        import_thread = threading.Thread(target=self._execute_import, daemon=True)
+        import_thread.start()
 
     def _execute_import(self):
+        """Target function for the import thread. Calls importer.main."""
         import_success = False
         try:
-            status_key = "status_import_running"; self._update_status(status_key)
-            run_import_main(progress_callback=self._update_progress)
-            # Check if DB exists *after* import attempt
-            if os.path.exists(DATABASE_PATH):
-                 import_success = True; self._update_status("status_import_success")
-                 # Only show popup if not during startup
+            self._update_status("status_import_running")
+            importer.main(progress_callback=self._update_progress)
+            if os.path.exists(config.DATABASE_PATH):
+                 import_success = True
+                 self._update_status("status_import_success")
                  if not self.import_running_at_startup:
                      self._show_info("msg_title_import_complete", "msg_import_complete")
             else:
-                 # If DB still doesn't exist, it's an error, even if importer didn't raise exception
-                 raise FileNotFoundError(f"Database file '{DATABASE_PATH}' not found after import attempt.")
+                 raise FileNotFoundError(f"Database file '{config.DATABASE_PATH}' still not found after import.")
 
         except FileNotFoundError as e: self._update_status("status_import_error_file", error=e); self._show_error("msg_title_import_error", "msg_import_file_not_found", error=e)
         except sqlite3.Error as e: self._update_status("status_import_error_db", error=e); self._show_error("msg_title_import_error", "msg_import_db_error", error=e)
         except requests.exceptions.RequestException as e: self._update_status("status_import_error_download", error=e); self._show_error("msg_title_import_error", "msg_import_download_error", error=e)
         except IOError as e: self._update_status("status_import_error_io", error=e); self._show_error("msg_title_import_error", "msg_import_io_error", error=e)
         except OSError as e: self._update_status("status_import_error_os", error=e); self._show_error("msg_title_import_error", "msg_import_os_error", error=e)
-        except Exception as e: self._update_status("status_import_error_unknown", error=e); self._show_error("msg_title_import_error", "msg_import_unknown_error", error=e)
+        except Exception as e:
+            self._update_status("status_import_error_unknown", error=e); self._show_error("msg_title_import_error", "msg_import_unknown_error", error=e)
+            import traceback
+            traceback.print_exc()
         finally:
-            # Ensure UI updates happen on the main thread
             self.root.after(0, self._finalize_import, import_success)
 
-    # --- MODIFIED: _finalize_import ---
     def _finalize_import(self, import_successful):
+        """Updates UI after import attempt completes (runs in main thread)."""
         self._close_waiting_dialog()
-        db_now_exists = os.path.exists(DATABASE_PATH)
-        self.progress_var.set(0.0); self.progress_label_var.set("") # Clear progress text
+        db_now_exists = os.path.exists(config.DATABASE_PATH)
+        self.progress_var.set(0.0); self.progress_label_var.set("")
 
-        # Assuming Import is always the first item in the Data menu (index 0)
-        try:
-            self.data_menu.entryconfig(0, state=tk.NORMAL) # Always re-enable import after attempt
-        except tk.TclError:
-             print("Warning: Could not enable Import menu item at index 0.")
-
+        try: self.data_menu.entryconfig(0, state=tk.NORMAL)
+        except tk.TclError: pass
 
         if db_now_exists:
             self._update_status("status_ready")
             self.search_button.config(state=tk.NORMAL)
-            # --- CHANGE: Enable export button regardless of current_search_data ---
             self.export_button.config(state=tk.NORMAL)
             self.compare_button.config(state=tk.NORMAL)
         else:
-            # If DB still doesn't exist after import attempt
-            self._update_status("status_db_missing_fail", db_path=DATABASE_PATH)
+            self._update_status("status_db_missing_fail", db_path=config.DATABASE_PATH)
             self.search_button.config(state=tk.DISABLED)
             self.export_button.config(state=tk.DISABLED)
             self.compare_button.config(state=tk.DISABLED)
-            # Show error only if it failed during startup import
             if self.import_running_at_startup:
-                self._show_error("msg_title_db_error", "msg_db_init_failed", db_path=DATABASE_PATH)
+                self._show_error("msg_title_db_error", "msg_db_init_failed", db_path=config.DATABASE_PATH)
 
-        self.import_running_at_startup = False # Reset flag
+        self.import_running_at_startup = False
 
-    # --- MODIFIED: Search Handling ---
+    # --- Search Handling ---
     def _search_vehicle(self):
+        """Handles the search button click."""
         tg_code = self.search_tg_code_entry.get().strip()
         if not tg_code:
-            self._show_error("msg_title_input_missing", "msg_input_tg_code_search")
+            # Only show error if triggered by button, not by language change
+            # Check if the text area is currently empty (implies not a language change refresh)
+            if not self.search_results_text.get('1.0', 'end-1c'):
+                 self._show_error("msg_title_input_missing", "msg_input_tg_code_search")
             return
 
         self._update_status("status_searching", code=tg_code)
         self.search_results_text.config(state=tk.NORMAL)
         self.search_results_text.delete('1.0', tk.END)
-        # self.export_button.config(state=tk.DISABLED) # REMOVED: Export button is always enabled if DB exists
-        self.current_search_data = None # Clear previous search data
 
         try:
-            result_row, normalized_mapping = search_by_tg_code(tg_code)
-            if result_row:
-                self.current_search_data = (result_row, normalized_mapping) # Store data for display
-                display_text = self._format_search_result(result_row)
+            raw_data_row = database.search_by_tg_code(tg_code)
+            if raw_data_row:
+                formatted_data = formatting.format_vehicle_data(raw_data_row)
+                display_text = self._format_search_result_for_gui(formatted_data) # Uses translated labels
                 self.search_results_text.insert(tk.END, display_text)
                 self._update_status("status_search_found", code=tg_code)
-                # self.export_button.config(state=tk.NORMAL) # REMOVED: Export button is always enabled if DB exists
             else:
-                # Use translated message for no results
-                self.search_results_text.insert(tk.END, _("search_results_none", code=tg_code))
+                # Use translation._
+                self.search_results_text.insert(tk.END, translation._("search_results_none", code=tg_code))
                 self._update_status("status_search_not_found", code=tg_code)
+
         except sqlite3.Error as e:
             self._update_status("status_search_db_error", error=e)
-            # Use translated error message
-            self.search_results_text.insert(tk.END, _("search_results_db_error", error=e))
+            # Use translation._
+            self.search_results_text.insert(tk.END, translation._("search_results_db_error", error=e))
             self._show_error("msg_title_search_error", "msg_search_db_error", error=e)
         except Exception as e:
             self._update_status("status_search_error", error=e)
-            # Use translated error message
-            self.search_results_text.insert(tk.END, _("search_results_unknown_error", error=e))
+            # Use translation._
+            self.search_results_text.insert(tk.END, translation._("search_results_unknown_error", error=e))
             self._show_error("msg_title_search_error", "msg_search_unknown_error", error=e)
         finally:
-            self.search_results_text.config(state=tk.DISABLED) # Make read-only again
+            self.search_results_text.config(state=tk.DISABLED)
 
-    # --- _format_search_result (FINAL FIX - Remains the same) ---
-    def _format_search_result(self, result_row):
-        """Formats the search result using translations."""
+    def _format_search_result_for_gui(self, formatted_data):
+        """Formats the already formatted data for display in the ScrolledText using translated labels."""
         lines = []
-        lines.append(_("divider_text")) # Use translated divider
+        # Use translation._
+        lines.append(translation._("divider_text"))
 
-        # --- FINAL FIX: Use dictionary access consistently ---
-        try:
-            # Access header values using dictionary-style square brackets.
-            # Keys must match the column names/aliases returned by the search query.
-            tg_code_val = result_row['TG_Code'] # Query returns 'TG_Code' (underscore) via e.*
-            marke_val = result_row['Marke']     # Query returns 'Marke' (no underscore) via alias
-            typ_val = result_row['Typ']         # Query returns 'Typ' (no underscore) via e.*
-        except KeyError as e:
-            # This block executes if any of the expected keys ('TG_Code', 'Marke', 'Typ')
-            # are missing from the result_row, which indicates a problem upstream
-            # (e.g., in the search query or database structure).
-            print(f"ERROR: Missing expected header key in result_row: {e}. Displaying N/A.")
-            # Assign 'N/A' as fallback values if a key is missing
-            tg_code_val = 'N/A'
-            marke_val = 'N/A'
-            typ_val = 'N/A'
-            # You might want to log the full result_row here for debugging:
-            # print(f"Problematic result_row keys: {result_row.keys()}")
-        # --- END FINAL FIX ---
+        # --- Header ---
+        tg_code_val = formatted_data.get('TG_Code', 'N/A')
+        marke_val = formatted_data.get('Marke', 'N/A')
+        typ_val = formatted_data.get('Typ', 'N/A')
+        # Use translation._ for header format string
+        lines.append(translation._("search_results_header", code=tg_code_val, make=marke_val, model=typ_val))
+        lines.append(translation._("divider_text"))
 
-        # Use translated header format
-        lines.append(_("search_results_header", code=tg_code_val, make=marke_val, model=typ_val))
-        lines.append(_("divider_text")) # Use translated divider
-
-        available_columns = result_row.keys()
-        # Get the cleaned TG_Code column name once for use in the loop check below
-        tg_code_db_col = clean_sql_identifier('TG-Code') # Result: 'TG_Code'
-
-        # --- Loop for remaining fields ---
-        for item_name in DISPLAY_ORDER_WITH_DIVIDERS:
-            if item_name == DIVIDER_MARKER:
-                lines.append(_("divider_text"))
+        # --- Body ---
+        for item_name in config.DISPLAY_ORDER_WITH_DIVIDERS:
+            if item_name == config.DIVIDER_MARKER:
+                lines.append(translation._("divider_text"))
                 continue
 
-            # --- Skip header columns already displayed ---
-            if item_name == 'TG-Code' or item_name == tg_code_db_col or item_name == 'Marke' or item_name == 'Typ':
-                 continue
-
-            # --- Logic for finding and formatting value for the body ---
-            value = None
-            display_name = item_name # Use original name from DISPLAY_ORDER as the label
-            cleaned_col_name_check = clean_sql_identifier(item_name)
-            access_key = None
-
-            # Determine the correct key to access result_row for this item_name
-            if item_name in available_columns:
-                access_key = item_name
-            elif cleaned_col_name_check in available_columns:
-                access_key = cleaned_col_name_check
-            else:
-                 continue # Skip if neither key is found
-
-            # Access the value using the determined key (dictionary-style)
-            try:
-                 value = result_row[access_key]
-            except KeyError:
-                 # Should not happen if access_key was found in available_columns, but safety check
-                 print(f"Warning: Unexpected KeyError accessing '{access_key}' for item '{item_name}'. Skipping.")
-                 continue
-
-            # Check if column should be omitted
-            if cleaned_col_name_check in OMIT_COLUMNS_CLEANED:
+            if item_name in ['TG_Code', 'Marke', 'Typ']:
                 continue
 
-            # --- Formatting logic (Date, (leer), Translations, Units, PS) ---
-            # (This part remains unchanged from the previous correct version)
-            display_value = ""
-            is_leistung = (cleaned_col_name_check == 'Leistung')
-            is_antrieb = (cleaned_col_name_check == 'Antrieb')
-            is_treibstoff = (cleaned_col_name_check == 'Treibstoff')
+            # Get the pre-formatted value (already translated if needed by formatting.py)
+            display_value = formatted_data.get(item_name, "")
+            # Get the translated label for the item_name
+            translated_label = translation._(item_name)
 
-            if cleaned_col_name_check == 'Homologationsdatum':
-                if value:
-                    try:
-                        date_obj = datetime.strptime(str(value), HOMOLOGATIONSDATUM_INPUT_FORMAT)
-                        display_value = date_obj.strftime(HOMOLOGATIONSDATUM_OUTPUT_FORMAT)
-                    except (ValueError, TypeError):
-                        display_value = f"{value} (format?)"
-            elif isinstance(value, str) and value == '(leer)':
-                display_value = ""
-            elif value is not None:
-                display_value = str(value)
+            lines.append(f"{translated_label:<25}: {display_value}") # Use translated label
 
-            if is_antrieb and display_value:
-                display_value = ANTRIEB_MAP.get(display_value, display_value)
-            elif is_treibstoff and display_value:
-                display_value = TREIBSTOFF_MAP.get(display_value, display_value)
-
-            cleaned_col_name_for_units = cleaned_col_name_check
-            if is_leistung and display_value:
-                try:
-                    kw_str = display_value.split(' ')[0]
-                    kw_value_float = float(kw_str)
-                    ps_value = kw_value_float * KW_TO_PS
-                    ps_value_formatted = f"{ps_value:.1f}"
-                    display_value = f"{kw_str} kW / {ps_value_formatted} PS"
-                except (ValueError, TypeError):
-                    display_value = f"{display_value} kW (Invalid)"
-            elif display_value and cleaned_col_name_for_units in UNITS_MAP and not is_leistung:
-                display_value = f"{display_value} {UNITS_MAP[cleaned_col_name_for_units]}"
-
-            # Add the formatted line to the output
-            lines.append(f"{item_name:<25}: {display_value}")
-
-        lines.append(_("divider_text"))
+        lines.append(translation._("divider_text"))
         return "\n".join(lines)
 
-
-
-    # --- MODIFIED: Export Handling ---
+    # --- Export Handling ---
     def _export_vehicle_pdf(self):
-        # REMOVED: self._search_vehicle() call
-
-        # --- Get TG-Code from entry field ---
+        """Handles the Export PDF button click."""
         tg_code = self.search_tg_code_entry.get().strip()
         if not tg_code:
-            self._show_error("msg_title_input_missing", "msg_input_tg_code_export") # Use specific message if desired
+            self._show_error("msg_title_input_missing", "msg_input_tg_code_export")
             return
 
-        # --- Perform Search within Export function ---
-        self._update_status("status_searching", code=tg_code) # Reuse searching status
+        self._update_status("status_searching", code=tg_code)
         try:
-            result_row, norm_map = search_by_tg_code(tg_code)
-
-            # --- Check if search was successful ---
-            if result_row:
-                # --- Proceed with Export ---
+            raw_data_row = database.search_by_tg_code(tg_code)
+            if raw_data_row:
                 self._update_status("status_exporting", code=tg_code)
                 try:
-                    os.makedirs(EXPORT_DIR_SINGLE, exist_ok=True) # Ensure export dir exists
-
-                    # Create filename
+                    os.makedirs(config.EXPORT_DIR_SINGLE, exist_ok=True)
                     cleaned_name_part = clean_sql_identifier(tg_code)
                     safe_filename_part = cleaned_name_part.lstrip('_')
                     base_filename = f"{safe_filename_part}.pdf"
-                    full_pdf_path = os.path.join(EXPORT_DIR_SINGLE, base_filename)
+                    full_pdf_path = os.path.join(config.EXPORT_DIR_SINGLE, base_filename)
 
-                    # Call the export function from export.py
-                    export_single_pdf(result_row, norm_map, full_pdf_path)
+                    # export.py now handles internal formatting and translation via translation._
+                    success = export.create_single_pdf(raw_data_row, full_pdf_path)
 
-                    # --- Update status bar ---
-                    self._update_status("status_export_success", path=full_pdf_path)
-                    # --- REMOVED: Show success message popup ---
-                    # self._show_info("msg_title_export_success", "msg_export_success", path=full_pdf_path)
+                    if success:
+                        self._update_status("status_export_success", path=full_pdf_path)
+                        self._open_file(full_pdf_path)
+                    else:
+                        self._update_status("status_export_error_unknown", error="PDF generation failed")
+                        self._show_error("msg_title_export_error", "msg_export_unknown_error", error="PDF generation failed")
 
-                    # --- Attempt to open the generated PDF ---
-                    try:
-                        if sys.platform == "win32":
-                            os.startfile(full_pdf_path)
-                        elif sys.platform == "darwin": # macOS
-                            subprocess.call(['open', full_pdf_path])
-                        else: # Linux and other Unix-like systems
-                            subprocess.call(['xdg-open', full_pdf_path])
-                        print(f"Attempted to open PDF: {full_pdf_path}")
-                    except FileNotFoundError:
-                        print(f"Warning: Could not find default application opener for platform '{sys.platform}'. Please open the PDF manually at '{full_pdf_path}'.")
-                    except Exception as e:
-                        print(f"Error attempting to open PDF '{full_pdf_path}': {e}")
-                    # --- End of PDF opening logic ---
-
-                except OSError as e: # Error during PDF file/folder operations
+                except OSError as e:
                     self._update_status("status_export_folder_error", error=e)
-                    self._show_error("msg_title_export_error", "msg_export_folder_error", path=EXPORT_DIR_SINGLE, error=e)
-                except Exception as e: # Error during PDF generation itself
+                    self._show_error("msg_title_export_error", "msg_export_folder_error", path=config.EXPORT_DIR_SINGLE, error=e)
+                except Exception as e:
                     self._update_status("status_export_error", error=e)
                     self._show_error("msg_title_export_error", "msg_export_unknown_error", error=e)
-
             else:
-                # --- Search failed (TG-Code not found) ---
-                self._update_status("status_search_not_found", code=tg_code) # Reuse status
-                self._show_error("msg_title_search_error", "msg_search_not_found", code=tg_code) # Reuse message
+                self._update_status("status_search_not_found", code=tg_code)
+                self._show_error("msg_title_search_error", "msg_search_not_found", code=tg_code)
 
-        except sqlite3.Error as e: # Error during the search_by_tg_code call
+        except sqlite3.Error as e:
             self._update_status("status_search_db_error", error=e)
             self._show_error("msg_title_search_error", "msg_search_db_error", error=e)
-        except Exception as e: # Other unexpected error during search
+        except Exception as e:
             self._update_status("status_search_error", error=e)
             self._show_error("msg_title_search_error", "msg_search_unknown_error", error=e)
 
-
-    # --- MODIFIED: Compare Handling ---
+    # --- Compare Handling ---
     def _compare_vehicles(self):
+        """Handles the Compare Vehicles button click."""
         tg_codes_str = self.compare_tg_codes_entry.get().strip()
         if not tg_codes_str:
             self._show_error("msg_title_input_missing", "msg_input_tg_code_compare")
             return
 
-        # Split and clean input codes
         tg_codes_input = [code.strip() for code in tg_codes_str.split(',') if code.strip()]
 
-        # Validate number of codes
         if not (2 <= len(tg_codes_input) <= 3):
             self._show_error("msg_title_compare_error", "msg_compare_invalid_input")
             return
 
-        codes_str = ', '.join(tg_codes_input) # For status message
+        codes_str = ', '.join(tg_codes_input)
         self._update_status("status_comparing", codes=codes_str)
 
-        all_car_data_formatted = []
-        valid_tg_codes_for_header = []
+        all_formatted_data = []
+        valid_codes_found = []
         found_data = False
 
         try:
-            # Fetch data for each code
             for tg_code in tg_codes_input:
                 self._update_status("status_compare_fetching", code=tg_code)
-                # Use the function from compare.py
-                formatted_data = get_formatted_car_data(tg_code)
-                all_car_data_formatted.append(formatted_data) # Append even if None to keep order
-                valid_tg_codes_for_header.append(tg_code) # Keep original code for header
-                if formatted_data:
-                    found_data = True
+                # compare.py handles search, formatting, and value translation
+                formatted_data = compare.get_formatted_car_data_for_compare(tg_code)
+                all_formatted_data.append(formatted_data)
+                valid_codes_found.append(tg_code)
+                if formatted_data: found_data = True
 
-            # Check if any data was found at all
             if not found_data:
                 self._update_status("status_compare_no_data_found")
                 self._show_error("msg_title_compare_error", "msg_compare_no_data_found")
                 return
 
-            # Generate the comparison PDF
             self._update_status("status_compare_creating_pdf")
-            # Use the function from compare.py
-            pdf_path = generate_comparison_pdf(
-                valid_tg_codes_for_header,
-                all_car_data_formatted,
-                DISPLAY_ORDER_WITH_DIVIDERS, # Use shared constant
-                EXPORT_DIR_COMPARE # Use export dir from compare.py
-            )
+            # compare.py handles PDF label/header translation via translation._
+            pdf_path = compare.generate_comparison_pdf(valid_codes_found, all_formatted_data)
 
             if pdf_path:
-                # --- Update status bar ---
                 self._update_status("status_compare_success", path=pdf_path)
-                # --- REMOVED: Show success message popup ---
-                # self._show_info("msg_title_compare_success", "msg_compare_success", path=pdf_path)
-
-                # --- Attempt to open the generated Comparison PDF ---
-                try:
-                    if sys.platform == "win32":
-                        os.startfile(pdf_path)
-                    elif sys.platform == "darwin": # macOS
-                        subprocess.call(['open', pdf_path])
-                    else: # Linux and other Unix-like systems
-                        subprocess.call(['xdg-open', pdf_path])
-                    print(f"Attempted to open Comparison PDF: {pdf_path}")
-                except FileNotFoundError:
-                    print(f"Warning: Could not find default application opener for platform '{sys.platform}'. Please open the PDF manually at '{pdf_path}'.")
-                except Exception as e:
-                    print(f"Error attempting to open Comparison PDF '{pdf_path}': {e}")
-                # --- End of Comparison PDF opening logic ---
+                self._open_file(pdf_path)
             else:
-                # If generate_comparison_pdf returns None without raising an exception
                 self._update_status("status_compare_pdf_error")
-                # Optionally show a generic error message
-                self._show_error("msg_title_compare_error", "status_compare_pdf_error") # Re-use status key for message
+                self._show_error("msg_title_compare_error", "status_compare_pdf_error")
 
         except sqlite3.Error as e:
             self._update_status("status_compare_db_error", error=e)
             self._show_error("msg_title_compare_error", "msg_compare_db_error", error=e)
         except OSError as e:
             self._update_status("status_compare_folder_error", error=e)
-            self._show_error("msg_title_compare_error", "msg_compare_folder_error", path=EXPORT_DIR_COMPARE, error=e)
+            self._show_error("msg_title_compare_error", "msg_compare_folder_error", path=config.EXPORT_DIR_COMPARE, error=e)
         except Exception as e:
             self._update_status("status_compare_error", error=e)
             self._show_error("msg_title_compare_error", "msg_compare_unknown_error", error=e)
 
+    # --- File Opening Utility ---
+    def _open_file(self, file_path):
+        """Attempts to open the specified file using the default system application."""
+        try:
+            if sys.platform == "win32":
+                os.startfile(file_path)
+            elif sys.platform == "darwin": # macOS
+                subprocess.call(['open', file_path])
+            else: # Linux and other Unix-like systems
+                subprocess.call(['xdg-open', file_path])
+            print(f"Attempted to open file: {file_path}")
+        except FileNotFoundError:
+            msg = f"Could not find default application opener for platform '{sys.platform}'. Please open the file manually."
+            print(f"Warning: {msg}\nPath: '{file_path}'")
+        except Exception as e:
+            print(f"Error attempting to open file '{file_path}': {e}")
 
-# --- MODIFIED: Main Execution ---
+
+# --- Main Execution ---
 if __name__ == "__main__":
-    # Basic check if DATABASE_PATH was imported correctly
-    if 'DATABASE_PATH' not in globals():
-         print("FATAL ERROR: DATABASE_PATH constant not found.")
-         try:
-             # Try to show an error popup even without full i18n setup yet
-             root_err = tk.Tk(); root_err.withdraw()
-             messagebox.showerror("Startup Error", "Fatal Error: DATABASE_PATH constant not defined.")
-             root_err.destroy()
-         except tk.TclError: pass # Ignore if Tkinter isn't available
-         sys.exit(1)
+    # Initialize translations FIRST
+    translation.initialize_translations()
 
     root = tk.Tk()
-    app = VehicleDataApp(root) # Creates the UI, loads default language
+    app = VehicleDataApp(root) # Now uses translation._ for initial UI setup
 
-    # Check for database existence *after* UI is created
-    db_exists = os.path.exists(DATABASE_PATH)
+    # Check for database existence at startup
+    db_exists = os.path.exists(config.DATABASE_PATH)
 
     if not db_exists:
-        print(f"Database '{DATABASE_PATH}' not found. Starting automatic import...")
-        # Use translated prompt
-        if messagebox.askyesno(_("msg_title_db_missing"), _("msg_db_missing_prompt", db_path=DATABASE_PATH)):
-            # Run import in background thread, mark as startup import
+        print(f"Database '{config.DATABASE_PATH}' not found.")
+        # Use translation._ for messagebox
+        if messagebox.askyesno(translation._("msg_title_db_missing"), translation._("msg_db_missing_prompt", db_path=config.DATABASE_PATH)):
             app._run_import_thread(is_startup=True)
         else:
-             # User chose not to import, disable relevant UI elements
-             messagebox.showinfo(_("msg_title_notice"), _("msg_db_missing_continue"))
+             messagebox.showinfo(translation._("msg_title_notice"), translation._("msg_db_missing_continue"))
              app.search_button.config(state=tk.DISABLED)
-             app.export_button.config(state=tk.DISABLED) # Keep disabled if no DB
+             app.export_button.config(state=tk.DISABLED)
              app.compare_button.config(state=tk.DISABLED)
-             # Keep import enabled so they can try later
-             # Assuming Import is always the first item in the Data menu (index 0)
-             try:
-                 app.data_menu.entryconfig(0, state=tk.NORMAL)
-             except tk.TclError:
-                 print("Warning: Could not ensure Import menu item is enabled at index 0.")
-
-             app._update_status("status_db_missing_continue") # Update status bar
+             try: app.data_menu.entryconfig(0, state=tk.NORMAL)
+             except tk.TclError: pass
+             app._update_status("status_db_missing_continue")
     else:
-        # Database exists, enable UI elements
-        print(f"Database '{DATABASE_PATH}' found. Starting application.")
-        # Assuming Import is always the first item in the Data menu (index 0)
-        try:
-            app.data_menu.entryconfig(0, state=tk.NORMAL)
-        except tk.TclError:
-            print("Warning: Could not ensure Import menu item is enabled at index 0.")
-
+        print(f"Database '{config.DATABASE_PATH}' found. Starting application.")
+        try: app.data_menu.entryconfig(0, state=tk.NORMAL)
+        except tk.TclError: pass
         app.search_button.config(state=tk.NORMAL)
-        # --- CHANGE: Enable export button initially if DB exists ---
         app.export_button.config(state=tk.NORMAL)
         app.compare_button.config(state=tk.NORMAL)
-        app._update_status("status_ready") # Set initial status
+        app._update_status("status_ready")
 
     root.mainloop()

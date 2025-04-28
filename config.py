@@ -1,21 +1,38 @@
 # config.py
 import os
 import re
+import sys # <--- Import sys
 
-# --- File/Directory Paths ---
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-EXPORT_DIR = os.path.join(BASE_DIR, "export") # General export dir
-EXPORT_DIR_SINGLE = EXPORT_DIR # Can be the same or different if needed
+# --- Determine Base Directory ---
+# If running as a bundled executable (frozen), use the directory of the executable.
+# Otherwise (running as script), use the directory of this config file.
+if getattr(sys, 'frozen', False):
+    # Running as bundled executable (e.g., via PyInstaller)
+    # sys.executable points to the executable itself
+    BASE_DIR = os.path.dirname(sys.executable)
+    print(f"INFO: Running bundled. Persistent BASE_DIR set to: {BASE_DIR}")
+else:
+    # Running as a script
+    BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+    print(f"INFO: Running as script. Persistent BASE_DIR set to: {BASE_DIR}")
+
+# --- Persistent File/Directory Paths (Relative to BASE_DIR) ---
+# These paths will now be relative to the executable's location when bundled.
+DATA_DIR = BASE_DIR
+EXPORT_DIR = os.path.join(BASE_DIR, "export")
+EXPORT_DIR_SINGLE = EXPORT_DIR
 EXPORT_DIR_COMPARE = EXPORT_DIR
-LANG_DIR = os.path.join(BASE_DIR, "lang")
 DATABASE_NAME = 'emissionen.db'
-DATABASE_PATH = os.path.join(BASE_DIR, DATABASE_NAME) # DB in root project dir
+DATABASE_PATH = os.path.join(BASE_DIR, DATABASE_NAME) # DB in BASE_DIR
 INPUT_FILENAME = "emissionen.txt"
-INPUT_FILE_PATH = os.path.join(DATA_DIR, INPUT_FILENAME)
-# Path for DejaVu fonts (assuming they are in a 'fonts' subdirectory)
-# Adjust this path if your fonts are located elsewhere
-FONT_DIR = os.path.join(BASE_DIR, "fonts")
+INPUT_FILE_PATH = os.path.join(DATA_DIR, INPUT_FILENAME) # Downloaded file in DATA_DIR
+
+# --- Bundled Resource Paths (Relative to where the script *was*) ---
+# These paths are used by get_resource_path, which handles _MEIPASS correctly.
+# Define them relative to the original script structure.
+_SCRIPT_DIR = os.path.abspath(os.path.dirname(__file__)) # Original script dir
+LANG_DIR = os.path.join(_SCRIPT_DIR, "lang")
+FONT_DIR = os.path.join(_SCRIPT_DIR, "fonts")
 FONT_REGULAR_PATH = os.path.join(FONT_DIR, "DejaVuSans.ttf")
 FONT_BOLD_PATH = os.path.join(FONT_DIR, "DejaVuSans-Bold.ttf")
 FONT_ITALIC_PATH = os.path.join(FONT_DIR, "DejaVuSans-Oblique.ttf")
@@ -62,12 +79,7 @@ OMIT_COLUMNS_ORIGINAL = [
     "ZT_NMHC", "ZT_NOx", "ZT_AbgasCode"
 ]
 
-# --- REMOVED Translation Maps ---
-# ANTRIEB_MAP = { ... } # Now handled by translation files
-# TREIBSTOFF_MAP = { ... } # Now handled by translation files
-
 # Desired Display Order with Dividers (Original names)
-# These names will be used as KEYS for translation lookups
 DIVIDER_MARKER = "---"
 DISPLAY_ORDER_WITH_DIVIDERS = [
     "TG_Code", "Marke", "Typ", "Homologationsdatum", "Antrieb", "Hubraum", "Treibstoff",
@@ -86,17 +98,15 @@ DISPLAY_ORDER_WITH_DIVIDERS = [
 ]
 
 # --- PDF Settings ---
-# PDF_TITLE_SINGLE = "Fahrzeugdatenblatt" # Now handled by translation key "pdf_title_single"
-# PDF_TITLE_COMPARE = "Fahrzeugvergleich" # Now handled by translation key "pdf_title_compare"
-PDF_FONT_FALLBACK = "Helvetica" # Fallback if DejaVu fails
-PDF_FONT_NAME_DEJAVU = "DejaVu" # Name to use for DejaVu in FPDF
+PDF_FONT_FALLBACK = "Helvetica"
+PDF_FONT_NAME_DEJAVU = "DejaVu"
 PDF_FONT_SIZE_TITLE = 16
 PDF_FONT_SIZE_HEADER = 12
 PDF_FONT_SIZE_BODY = 10
-PDF_LABEL_WIDTH = 60 # Width for the label column in mm (Single Export)
-PDF_LINE_HEIGHT = 6 # Line height in mm (Single Export)
-PDF_DIVIDER_THICKNESS = 0.2 # Thickness of divider lines in mm
-PDF_DIVIDER_MARGIN = 3 # Space above/below divider line in mm
+PDF_LABEL_WIDTH = 60
+PDF_LINE_HEIGHT = 6
+PDF_DIVIDER_THICKNESS = 0.2
+PDF_DIVIDER_MARGIN = 3
 
 # --- GUI Settings ---
 DEFAULT_LANG = "en"
@@ -115,20 +125,26 @@ SUPPORTED_LANGS = {
     "tlh": "tlhIngan Hol (Klingon)",
     "na": "Na'vi",
     "sjn": "Sindarin (Elvish)",
-    "1337": "1337 (Leetspeak)"
+    "1337": "1337 (Leetspeak)",
+    "x-piglatin": "Igpay Atinlay (Pig Latin)"
 }
 
 # --- Derived Constants ---
-# Helper function needed here to calculate OMIT_COLUMNS_CLEANED
 def _clean_sql_identifier_local(name):
     """Cleans a string to be a valid SQL identifier (table/column name)."""
     if not isinstance(name, str): return ""
     name = re.sub(r'[ /.\-+()]+', '_', name)
-    # Specific replacements needed *before* stripping underscore if they create leading/trailing ones
-    name = name.replace('ET_THC_NOx', 'ET_THC_NOx') # Keep as is
-    name = name.replace('ZT_THC_NOx', 'ZT_THC_NOx') # Keep as is
+    name = name.replace('ET_THC_NOx', 'ET_THC_NOx')
+    name = name.replace('ZT_THC_NOx', 'ZT_THC_NOx')
     name = name.strip('_')
     if name and name[0].isdigit(): name = '_' + name
     return name
 
 OMIT_COLUMNS_CLEANED = set(_clean_sql_identifier_local(col) for col in OMIT_COLUMNS_ORIGINAL)
+
+# --- Final Check and Print ---
+print(f"INFO: Database path set to: {DATABASE_PATH}")
+print(f"INFO: Data directory set to: {DATA_DIR}")
+print(f"INFO: Export directory set to: {EXPORT_DIR}")
+print(f"INFO: Language directory (relative for resources) set to: {LANG_DIR}")
+print(f"INFO: Font directory (relative for resources) set to: {FONT_DIR}")

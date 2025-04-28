@@ -27,7 +27,7 @@ UNITS_MAP = {
     "Vmax_von": "km/h",
     "Vmax_bis": "km/h",
     "Hubraum": "ccm",
-    "Leistung": "kW",
+    "Leistung": "kW", # Keep kW here for lookup if needed elsewhere
     "Leistung_bei_n_min": "rpm",
     "Drehmoment": "Nm",
     "Drehmoment_bei_n_min": "rpm",
@@ -36,6 +36,9 @@ UNITS_MAP = {
     "Standgeräusch_bei_n_min": "rpm"
     # Add any other columns with units if needed
 }
+
+# Conversion factor
+KW_TO_PS = 1.35962
 
 # Assumed input format for Homologationsdatum (e.g., YYYYMMDD)
 # Adjust this if your data uses a different format
@@ -224,13 +227,13 @@ def search_by_tg_code(tg_code_to_search):
         if conn:
             conn.close()
 
-# --- Display Function (MODIFIED for Custom Order and Dividers) ---
+# --- Display Function (MODIFIED for PS calculation) ---
 
 def display_result(result_row, normalized_mapping):
     """Formats and prints the result row according to DISPLAY_ORDER_WITH_DIVIDERS."""
     print("-" * 40)
-    # *** MODIFIED: Use TG_Code (underscore) to access the key ***
-    print(f"Details for TG-Code: {result_row['TG_Code']} - {result_row['Marke']} - {result_row['Typ']}") # Use underscore
+    # Display TG_Code, Marke, Typ in the header
+    print(f"Details for TG-Code: {result_row['TG_Code']} - {result_row['Marke']} - {result_row['Typ']}")
     print("-" * 40)
 
     # Get all available column names from the result row for checking existence
@@ -241,48 +244,43 @@ def display_result(result_row, normalized_mapping):
 
         # Check for divider marker
         if item_name == DIVIDER_MARKER:
-            print(DIVIDER_MARKER) # Print an empty line
+            print(DIVIDER_MARKER) # Print the marker string itself
             continue
 
         # If not a divider, treat as a column name
         col_name = item_name
 
-        # --- Skip if column is TG_Code (already printed) ---
-        # *** MODIFIED: Check for TG_Code (underscore) ***
-        if col_name == 'TG_Code': # Use underscore
+        # --- Skip columns already printed in header ---
+        if col_name in ['TG_Code', 'Marke', 'Typ']:
             continue
 
         # --- Skip if column doesn't exist in the result row ---
-        # Use the name from the display list for checking existence in the result keys
+        value = None # Initialize value
+        display_name = col_name # Default display name
+
         if col_name not in available_columns:
-             # Check if the *cleaned* version exists (in case display list uses original but result has cleaned)
+             # Check if the *cleaned* version exists
              cleaned_col_name_check = clean_sql_identifier(col_name)
              if cleaned_col_name_check not in available_columns:
-                 # Optional: Print a warning if a defined column is missing from results
-                 # print(f"Warning: Column '{col_name}' (or '{cleaned_col_name_check}') not found in result set.")
-                 continue
+                 continue # Skip if neither original nor cleaned name exists
              else:
-                 # If cleaned name exists, use that to fetch value, but keep original display name
+                 # Use cleaned name to fetch value, keep original display name
                  value = result_row[cleaned_col_name_check]
-                 display_name = col_name # Keep original name for display
-         # If original name exists, fetch using that
         else:
+            # Use original name to fetch value
             value = result_row[col_name]
-            display_name = col_name # Use the name from the display order list
 
 
         # --- Check if the column should be omitted based on the OMIT list ---
-        # Clean the name *before* checking against the cleaned omit list
         cleaned_col_name_for_check = clean_sql_identifier(col_name)
         if cleaned_col_name_for_check in OMIT_COLUMNS_CLEANED:
             continue # Skip this column entirely
 
         # --- Process and format the value ---
-        # value = result_row[col_name] # Value fetched above based on existence check
         display_value = "" # Default to empty string
+        is_leistung = (clean_sql_identifier(col_name) == 'Leistung') # Check if it's the Leistung column
 
         # 1. Handle Special Formatting (Date)
-        # Use cleaned name for the check
         if clean_sql_identifier(col_name) == 'Homologationsdatum':
             if value:
                 try:
@@ -290,10 +288,8 @@ def display_result(result_row, normalized_mapping):
                     display_value = date_obj.strftime(HOMOLOGATIONSDATUM_OUTPUT_FORMAT)
                 except (ValueError, TypeError):
                     display_value = f"{value} (format?)"
-            # display_value remains "" if value was None/empty
 
         # 2. Handle '(leer)' placeholder for normalized fields
-        # Check the actual value retrieved from the row
         elif isinstance(value, str) and value == '(leer)':
             display_value = ""
 
@@ -301,10 +297,24 @@ def display_result(result_row, normalized_mapping):
         elif value is not None:
              display_value = str(value)
 
-        # 4. Add Units if applicable and value is not empty
-        # Use cleaned name for the UNITS_MAP lookup
+        # --- 4. Add Units / Calculate PS ---
         cleaned_col_name_for_units = clean_sql_identifier(col_name)
-        if display_value and cleaned_col_name_for_units in UNITS_MAP:
+
+        # Special handling for Leistung (kW and PS)
+        if is_leistung and display_value:
+            try:
+                kw_value_float = float(display_value)
+                ps_value = kw_value_float * KW_TO_PS
+                # Format PS value (e.g., 1 decimal place)
+                ps_value_formatted = f"{ps_value:.1f}"
+                # Combine kW and PS
+                display_value = f"{display_value} kW / {ps_value_formatted} PS"
+            except ValueError:
+                # If conversion to float fails, just add kW unit
+                display_value = f"{display_value} kW (Invalid number for PS calc)"
+
+        # Add units for other columns (if not Leistung and unit exists)
+        elif display_value and cleaned_col_name_for_units in UNITS_MAP and not is_leistung:
             display_value = f"{display_value} {UNITS_MAP[cleaned_col_name_for_units]}"
 
         # Print the final result for this column

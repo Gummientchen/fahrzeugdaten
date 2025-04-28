@@ -4,9 +4,16 @@ import csv
 import os
 import codecs
 import re
+import requests # For downloading
+from datetime import datetime, timezone # For date comparison
+from email.utils import parsedate_to_datetime # For parsing HTTP dates
 
 # --- Configuration ---
-INPUT_FILE_PATH = os.path.join('data', 'emissionen.txt')
+# *** NEW: Download URL ***
+DOWNLOAD_URL = "https://opendata.astra.admin.ch/ivzod/2000-Typengenehmigungen_TG_TARGA/2200-Basisdaten_TG_ab_1995/emissionen.txt"
+DATA_DIR = "data" # Define data directory name
+INPUT_FILENAME = "emissionen.txt"
+INPUT_FILE_PATH = os.path.join(DATA_DIR, INPUT_FILENAME) # Use defined constants
 DATABASE_PATH = 'emissionen.db'
 FILE_ENCODING = 'windows-1252' # Or 'cp1252'
 DB_ENCODING = 'utf-8'
@@ -84,10 +91,138 @@ def get_or_insert_normalized_id(cursor, table_name, value, cache):
         cache[cache_key] = id_
         return id_
 
+# --- NEW: Download Function ---
+def download_if_newer(url, local_path):
+    """
+    Downloads a file from a URL only if it's newer than the local copy
+    or if the local copy doesn't exist.
+
+    Args:
+        url (str): The URL to download from.
+        local_path (str): The local path to save the file.
+
+    Returns:
+        bool: True if the file is ready for use (downloaded or up-to-date),
+              False if an error occurred during download check or download.
+    """
+    print("-" * 40)
+    print(f"Checking file: {os.path.basename(local_path)}")
+    print(f"URL: {url}")
+
+    local_mtime = None
+    download_needed = False
+
+    # 1. Check local file
+    if os.path.exists(local_path):
+        try:
+            local_timestamp = os.path.getmtime(local_path)
+            # Convert local time to UTC datetime object (naive)
+            local_mtime = datetime.fromtimestamp(local_timestamp, tz=timezone.utc).replace(tzinfo=None)
+            print(f"Local file exists. Last modified (UTC): {local_mtime}")
+        except Exception as e:
+            print(f"Warning: Could not get modification time for local file '{local_path}': {e}")
+            # Proceed assuming download might be needed
+            download_needed = True
+    else:
+        print("Local file does not exist.")
+        download_needed = True
+
+    # 2. Check remote file headers (if local file exists and we have its time)
+    if not download_needed and local_mtime:
+        try:
+            print("Checking remote file modification date...")
+            # Use HEAD request to get only headers
+            response = requests.head(url, timeout=10) # Add a timeout
+            response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
+
+            if 'Last-Modified' in response.headers:
+                remote_last_modified_str = response.headers['Last-Modified']
+                # Parse HTTP date string into datetime object
+                remote_mtime = parsedate_to_datetime(remote_last_modified_str)
+
+                # Ensure comparison is valid (make remote naive UTC if it's aware)
+                if remote_mtime.tzinfo is not None:
+                     remote_mtime = remote_mtime.astimezone(timezone.utc).replace(tzinfo=None)
+
+                print(f"Remote file last modified (UTC): {remote_mtime}")
+
+                if remote_mtime > local_mtime:
+                    print("Remote file is newer.")
+                    download_needed = True
+                else:
+                    print("Local file is up-to-date.")
+                    # No download needed, file is ready
+                    print("-" * 40)
+                    return True
+            else:
+                print("Warning: 'Last-Modified' header not found on remote server. Downloading anyway.")
+                download_needed = True
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error checking remote file headers: {e}")
+            print("Proceeding without download check. Will use existing local file if present.")
+            # Don't force download if HEAD fails, maybe network is temp down
+            # If local file exists, we'll use it. If not, import will fail later.
+            return os.path.exists(local_path) # Return True only if local file exists
+        except Exception as e:
+            print(f"Error parsing remote modification date: {e}")
+            print("Downloading anyway.")
+            download_needed = True
+
+    # 3. Download if needed
+    if download_needed:
+        print(f"Downloading file to '{local_path}'...")
+        try:
+            # Ensure the target directory exists
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+            # Make GET request with streaming
+            with requests.get(url, stream=True, timeout=30) as r: # Longer timeout for download
+                r.raise_for_status()
+                # Write to file in chunks
+                with open(local_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            print("Download complete.")
+            print("-" * 40)
+            return True # Download successful, file is ready
+
+        except requests.exceptions.RequestException as e:
+            print(f"Error downloading file: {e}")
+            print("-" * 40)
+            return False # Download failed
+        except IOError as e:
+            print(f"Error writing file '{local_path}': {e}")
+            print("-" * 40)
+            return False # File writing failed
+        except Exception as e:
+            print(f"An unexpected error occurred during download: {e}")
+            print("-" * 40)
+            return False # Other download error
+
+    # Should only reach here if local file existed and was up-to-date
+    print("-" * 40)
+    return True
+
+
 # --- Main Script ---
 
 def main():
-    print(f"Starting import from '{INPUT_FILE_PATH}' to '{DATABASE_PATH}'...")
+    print(f"Starting import process...")
+
+    # --- NEW: Download Check ---
+    if not download_if_newer(DOWNLOAD_URL, INPUT_FILE_PATH):
+        print("Halting import process due to download error.")
+        return # Stop if download failed
+
+    # --- Check if input file exists after download attempt ---
+    # This is crucial if download_if_newer returned False on HEAD error but local file didn't exist
+    if not os.path.exists(INPUT_FILE_PATH):
+         print(f"ERROR: Input file '{INPUT_FILE_PATH}' not found and download failed or wasn't attempted.")
+         print("Please check the URL, network connection, and file permissions.")
+         return
+
+    print(f"Proceeding with import from '{INPUT_FILE_PATH}' to '{DATABASE_PATH}'...")
 
     # --- 0. Delete existing database file ---
     if os.path.exists(DATABASE_PATH):
@@ -134,8 +269,6 @@ def main():
             col_name_id = f"{clean_col_name}_id"
             normalized_table_mapping[col_name] = (table_name, col_name_id)
 
-            # Drop table if exists (redundant now but harmless)
-            # cursor.execute(f"DROP TABLE IF EXISTS {table_name};")
             # Create table
             create_table_sql = f"""
             CREATE TABLE {table_name} (
@@ -147,18 +280,19 @@ def main():
             print(f"  - Created normalized table: {table_name}")
 
         # Create the main table ('Emissionen')
-        # cursor.execute("DROP TABLE IF EXISTS Emissionen;") # Redundant now but harmless
         main_table_sql = "CREATE TABLE Emissionen (\n"
         column_definitions = []
 
         # Read header from file to define columns accurately
         try:
+            # Use INPUT_FILE_PATH which points to the potentially downloaded file
             with codecs.open(INPUT_FILE_PATH, 'r', encoding=FILE_ENCODING, errors='replace') as infile:
                 # Use csv reader to handle potential quoting and delimiters correctly
                 reader = csv.reader(infile, delimiter=DELIMITER)
                 header = next(reader) # Read the first row as header
                 print(f"Read headers: {header}")
         except FileNotFoundError:
+            # This check should ideally be redundant now due to checks after download_if_newer
             print(f"ERROR: Input file not found at '{INPUT_FILE_PATH}'")
             conn.close()
             return
@@ -185,7 +319,6 @@ def main():
                 # Add foreign key constraint later after all columns are defined
             else:
                 # Default to TEXT for other columns for robustness
-                # Could refine types (INTEGER, REAL) if data quality is guaranteed
                 column_definitions.append(f"    \"{clean_col}\" TEXT") # Quote name
 
         # Add foreign key constraints
@@ -221,6 +354,7 @@ def main():
     skipped_count = 0
 
     try:
+        # Use INPUT_FILE_PATH which points to the potentially downloaded file
         with codecs.open(INPUT_FILE_PATH, 'r', encoding=FILE_ENCODING, errors='replace') as infile:
             reader = csv.reader(infile, delimiter=DELIMITER)
             next(reader) # Skip header row again
@@ -253,11 +387,6 @@ def main():
             # Use INSERT OR REPLACE to overwrite rows with the same PRIMARY KEY
             insert_sql = f"INSERT OR REPLACE INTO Emissionen ({', '.join(main_table_cols_quoted)}) VALUES ({', '.join(placeholders)})"
 
-            # print("\nInsert SQL:", insert_sql) # Uncomment for debugging
-            # print("Columns for insert:", main_table_cols_quoted)
-            # print("Original headers for insert:", original_headers_for_insert)
-
-
             # Process rows
             for i, row in enumerate(reader):
                 if len(row) != len(original_headers):
@@ -283,12 +412,9 @@ def main():
                             normalized_id = get_or_insert_normalized_id(cursor, table_name, value, normalization_cache)
                             values_to_insert.append(normalized_id)
                         else:
-                            # For non-normalized columns, insert the value directly (as TEXT)
-                            # Handle potential None values if necessary, though csv usually reads empty strings
                             values_to_insert.append(value if value is not None else '')
 
                     # Execute insert for the main table row
-                    # print(f"Inserting row {i+2}: {values_to_insert}") # Uncomment for debugging
                     cursor.execute(insert_sql, tuple(values_to_insert))
                     inserted_count += 1
 
@@ -305,8 +431,6 @@ def main():
                      cursor.execute("PRAGMA foreign_keys = ON;") # Re-enable FKs if needed
                      continue # Skip this row
                 except sqlite3.IntegrityError as ie:
-                    # This should be less common now with INSERT OR REPLACE for PK,
-                    # but could happen for UNIQUE constraints in normalized tables or FK issues
                     print(f"Integrity error inserting row {i+2}: {ie}. Skipping row. Data: {row}")
                     skipped_count += 1
                     conn.rollback() # Rollback the failed transaction segment
@@ -329,8 +453,8 @@ def main():
             print(f"Skipped {skipped_count} rows due to errors.")
 
     except FileNotFoundError:
-        # This case should have been caught earlier, but added for robustness
-        print(f"ERROR: Input file not found at '{INPUT_FILE_PATH}'")
+        # Should be less likely now, but keep as a safeguard
+        print(f"ERROR: Input file not found at '{INPUT_FILE_PATH}' during import phase.")
     except sqlite3.Error as e:
         print(f"Database error during data import: {e}")
         if conn: conn.rollback() # Rollback if error occurs during import loop
@@ -344,15 +468,16 @@ def main():
             print("Database connection closed.")
 
 if __name__ == "__main__":
-    # Create data directory if it doesn't exist (for testing convenience)
-    if not os.path.exists('data'):
-        os.makedirs('data')
-        print("Created 'data' directory. Please place 'emissionen.txt' inside it.")
-        # You might want to exit here if the file definitely won't exist yet
-        # exit()
+    # Create data directory if it doesn't exist (needed for download target)
+    if not os.path.exists(DATA_DIR):
+        try:
+            os.makedirs(DATA_DIR)
+            print(f"Created data directory: '{DATA_DIR}'")
+        except OSError as e:
+            print(f"Error creating data directory '{DATA_DIR}': {e}")
+            # Decide if you want to exit if directory creation fails
+            # exit()
 
-    # Check if input file exists before running main
-    if not os.path.exists(INPUT_FILE_PATH):
-         print(f"ERROR: Input file '{INPUT_FILE_PATH}' not found. Please ensure it exists.")
-    else:
-        main()
+    # Run the main import process which now includes the download check
+    main()
+

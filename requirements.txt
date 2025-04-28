@@ -1,0 +1,9 @@
+certifi==2025.4.26
+charset-normalizer==3.4.1
+defusedxml==0.7.1
+fonttools==4.57.0
+fpdf2==2.8.3
+idna==3.10
+pillow==11.2.1
+requests==2.32.3
+urllib3==2.4.0

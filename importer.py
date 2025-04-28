@@ -11,196 +11,186 @@ from email.utils import parsedate_to_datetime
 # Import refactored components
 import config
 import database
-from utils import get_resource_path # Might be needed if fonts were loaded here
+from utils import get_resource_path
 
-# --- Renamed and Modified Check/Download Function ---
-def check_import_needed_and_download(url, db_path, download_target_path):
+# --- Constants for Check Status ---
+CHECK_UP_TO_DATE = 'UP_TO_DATE'
+CHECK_UPDATE_AVAILABLE = 'UPDATE_AVAILABLE'
+CHECK_DB_MISSING = 'DB_MISSING'
+CHECK_TIMEOUT = 'TIMEOUT'
+CHECK_ERROR = 'ERROR'
+
+# --- Modified Check Function (No Download) ---
+def check_for_updates(url, db_path):
     """
-    Checks if a database import is needed by comparing the DB modification time
-    with the remote source file's time. Downloads the source file if needed.
-    Returns True if an import should proceed, False otherwise.
+    Checks if a database update is available by comparing the DB modification time
+    with the remote source file's time. Does NOT download.
+    Returns a status string: CHECK_UP_TO_DATE, CHECK_UPDATE_AVAILABLE, CHECK_DB_MISSING, CHECK_TIMEOUT, CHECK_ERROR.
     """
     print("-" * 40)
-    print(f"Checking database: {os.path.basename(db_path)}")
+    print(f"Checking for updates against database: {os.path.basename(db_path)}")
     db_mtime = None
-    import_needed = False
-    download_attempted = False
 
-    # 1. Check DB modification time
-    if os.path.exists(db_path):
-        try:
-            db_timestamp = os.path.getmtime(db_path)
-            # Convert to UTC naive datetime for comparison
-            db_mtime = datetime.fromtimestamp(db_timestamp, tz=timezone.utc).replace(tzinfo=None)
-            print(f"Local database exists. Last modified (UTC): {db_mtime}")
-        except Exception as e:
-            print(f"Warning: Could not get modification time for database '{db_path}': {e}")
-            import_needed = True # Import if unsure about DB age
-    else:
+    # 1. Check DB existence and modification time
+    if not os.path.exists(db_path):
         print("Local database does not exist.")
-        import_needed = True # Import needed if DB doesn't exist
-
-    # 2. Check remote file modification time if DB exists and we have its time
-    if not import_needed and db_mtime:
-        try:
-            print("Checking remote source file modification date...")
-            response = requests.head(url, timeout=15)
-            response.raise_for_status()
-
-            if 'Last-Modified' in response.headers:
-                remote_last_modified_str = response.headers['Last-Modified']
-                remote_mtime_aware = parsedate_to_datetime(remote_last_modified_str)
-                # Convert to UTC naive datetime for comparison
-                if remote_mtime_aware.tzinfo is not None:
-                     remote_mtime = remote_mtime_aware.astimezone(timezone.utc).replace(tzinfo=None)
-                else:
-                     remote_mtime = remote_mtime_aware # Assume UTC
-                print(f"Remote source file last modified (UTC): {remote_mtime}")
-
-                if remote_mtime > db_mtime:
-                    print("Remote source file is newer than database.")
-                    import_needed = True
-                else:
-                    print("Local database is up-to-date with remote source.")
-                    print("-" * 40)
-                    return False # Import NOT needed
-            else:
-                print("Warning: 'Last-Modified' header not found. Assuming import is needed.")
-                import_needed = True
-
-        except requests.exceptions.Timeout:
-             print("Timeout occurred while checking remote file headers. Assuming import is needed.")
-             import_needed = True
-        except requests.exceptions.RequestException as e:
-            print(f"Error checking remote file headers: {e}. Assuming import is needed.")
-            import_needed = True
-        except Exception as e:
-            print(f"Error processing remote modification date: {e}. Assuming import is needed.")
-            import_needed = True
-
-    # 3. Perform download ONLY if import is determined to be needed
-    if import_needed:
-        print(f"Import needed. Downloading source file to '{download_target_path}'...")
-        download_attempted = True
-        try:
-            # Ensure parent directory exists for the download target
-            download_dir = os.path.dirname(download_target_path)
-            if not os.path.exists(download_dir):
-                try:
-                    os.makedirs(download_dir)
-                    print(f"Created directory for download: {download_dir}")
-                except OSError as e:
-                    print(f"Error creating directory '{download_dir}': {e}")
-                    raise # Re-raise directory creation error
-
-            # Use stream=True for potentially large files
-            with requests.get(url, stream=True, timeout=120) as r:
-                r.raise_for_status() # Check for HTTP errors during download
-                with open(download_target_path, 'wb') as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
-            print("Download complete.")
-            print("-" * 40)
-            return True # Import IS needed because download was triggered and successful
-
-        except requests.exceptions.RequestException as e:
-            print(f"Error downloading source file: {e}")
-            print("-" * 40)
-            raise e # Re-raise download error to stop the process
-        except IOError as e:
-            print(f"Error writing downloaded file '{download_target_path}': {e}")
-            print("-" * 40)
-            raise e # Re-raise write error
-        except Exception as e:
-            print(f"An unexpected error occurred during download: {e}")
-            print("-" * 40)
-            raise e # Re-raise unexpected error
-
-    # Should only reach here if DB existed and was up-to-date
-    return False # Import NOT needed
-
-
-# --- Main Import Orchestration Function ---
-def main(progress_callback=None):
-    """Orchestrates the download and import process."""
-    print("Starting import process...")
-    conn = None
-    import_successful = False # Flag to track success for deletion
+        return CHECK_DB_MISSING # DB missing, import definitely needed
 
     try:
-        # 1. Check if import is needed and download source if necessary
-        import_is_required = check_import_needed_and_download(
-            config.DOWNLOAD_URL,
-            config.DATABASE_PATH,
-            config.INPUT_FILE_PATH
-        )
+        db_timestamp = os.path.getmtime(db_path)
+        db_mtime = datetime.fromtimestamp(db_timestamp, tz=timezone.utc).replace(tzinfo=None)
+        print(f"Local database exists. Last modified (UTC): {db_mtime}")
+    except Exception as e:
+        print(f"Warning: Could not get modification time for database '{db_path}': {e}")
+        # If we can't read DB time, assume update is needed to be safe
+        return CHECK_UPDATE_AVAILABLE
 
-        if not import_is_required:
-            print("Database is up-to-date. No import necessary.")
-            return # Exit early if no import needed
+    # 2. Check remote file modification time
+    try:
+        print("Checking remote source file modification date...")
+        response = requests.head(url, timeout=config.STARTUP_CHECK_TIMEOUT)
+        response.raise_for_status()
 
-        # --- Import is required, proceed ---
+        if 'Last-Modified' in response.headers:
+            remote_last_modified_str = response.headers['Last-Modified']
+            remote_mtime_aware = parsedate_to_datetime(remote_last_modified_str)
+            if remote_mtime_aware.tzinfo is not None:
+                 remote_mtime = remote_mtime_aware.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                 remote_mtime = remote_mtime_aware # Assume UTC
+            print(f"Remote source file last modified (UTC): {remote_mtime}")
 
-        # Check if source file exists after download attempt (should exist if import_is_required is True)
-        if not os.path.exists(config.INPUT_FILE_PATH):
-             msg = f"Input file '{config.INPUT_FILE_PATH}' not found even though import was required."
-             print(f"ERROR: {msg}")
-             raise FileNotFoundError(msg)
+            if remote_mtime > db_mtime:
+                print("Remote source file is newer than database.")
+                return CHECK_UPDATE_AVAILABLE
+            else:
+                print("Local database is up-to-date with remote source.")
+                return CHECK_UP_TO_DATE
+        else:
+            print("Warning: 'Last-Modified' header not found. Cannot determine if update is needed.")
+            # Treat missing header as an error for the check phase
+            return CHECK_ERROR
 
+    except requests.exceptions.Timeout:
+         print(f"Timeout occurred after {config.STARTUP_CHECK_TIMEOUT}s while checking remote file headers.")
+         return CHECK_TIMEOUT
+    except requests.exceptions.RequestException as e:
+        print(f"Network error checking remote file headers: {e}.")
+        return CHECK_ERROR
+    except Exception as e:
+        print(f"Error processing remote modification date: {e}.")
+        # Treat processing error as check error
+        return CHECK_ERROR
+    finally:
+        print("-" * 40)
+
+
+# --- New Download Function ---
+def download_source_file(url, download_target_path):
+    """
+    Downloads the source file from the URL to the target path.
+    Returns True on success, False on failure.
+    """
+    print(f"Attempting to download source file to '{download_target_path}'...")
+    try:
+        download_dir = os.path.dirname(download_target_path)
+        if not os.path.exists(download_dir):
+            try:
+                os.makedirs(download_dir)
+                print(f"Created directory for download: {download_dir}")
+            except OSError as e:
+                print(f"Error creating directory '{download_dir}': {e}")
+                return False # Cannot proceed without directory
+
+        with requests.get(url, stream=True, timeout=config.DOWNLOAD_TIMEOUT) as r:
+            r.raise_for_status()
+            with open(download_target_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        print("Download complete.")
+        return True
+
+    except requests.exceptions.Timeout:
+         print(f"Timeout occurred during file download (limit: {config.DOWNLOAD_TIMEOUT}s).")
+         return False
+    except requests.exceptions.RequestException as e:
+        print(f"Error downloading source file: {e}")
+        return False
+    except IOError as e:
+        print(f"Error writing downloaded file '{download_target_path}': {e}")
+        return False
+    except Exception as e:
+        print(f"An unexpected error occurred during download: {e}")
+        return False
+    finally:
+        print("-" * 40)
+
+
+# --- Modified Main Import Orchestration Function (Assumes File Exists) ---
+def main(progress_callback=None):
+    """
+    Orchestrates the import process from the downloaded source file into the database.
+    Assumes config.INPUT_FILE_PATH exists. Deletes the source file on success.
+    """
+    print("Starting database import process...") # Changed message
+    conn = None
+    import_successful = False
+
+    # Check if source file exists before proceeding
+    if not os.path.exists(config.INPUT_FILE_PATH):
+         msg = f"Input file '{config.INPUT_FILE_PATH}' not found when starting main import function."
+         print(f"ERROR: {msg}")
+         raise FileNotFoundError(msg) # Raise error if file is missing
+
+    try:
         print(f"Proceeding with import from '{config.INPUT_FILE_PATH}' to '{config.DATABASE_PATH}'...")
 
-        # 2. Count total rows for progress reporting
+        # Count total rows
         total_rows = 0
         print("Counting total rows in input file...")
         try:
             with codecs.open(config.INPUT_FILE_PATH, 'r', encoding=config.FILE_ENCODING, errors='replace') as infile:
                 reader = csv.reader(infile, delimiter=config.DELIMITER)
-                header = next(reader) # Read header
-                total_rows = sum(1 for row in reader) # Sum remaining lines
+                header = next(reader)
+                total_rows = sum(1 for row in reader)
             print(f"Found {total_rows} data rows.")
         except Exception as e:
-            print(f"Warning: Could not accurately count rows: {e}. Progress bar may be inaccurate or indeterminate.")
-            total_rows = 0 # Reset if counting failed
+            print(f"Warning: Could not accurately count rows: {e}.")
+            total_rows = 0
 
-        # 3. Connect to Database
+        # Connect to DB
         conn = database.get_db_connection()
         cursor = conn.cursor()
         print("Database connection established.")
 
-        # 4. Create Schema (will drop existing table)
+        # Create Schema
         header_map, normalized_table_mapping = database.create_schema(cursor)
 
-        # 5. Insert Data
-        print("Starting data import...")
+        # Insert Data
+        print("Starting data insertion...")
         with codecs.open(config.INPUT_FILE_PATH, 'r', encoding=config.FILE_ENCODING, errors='replace') as infile:
             reader = csv.reader(infile, delimiter=config.DELIMITER)
-            next(reader) # Skip header row in the data file
+            next(reader)
             database.insert_data(conn, reader, header_map, normalized_table_mapping, total_rows, progress_callback)
 
         print("Import process finished successfully.")
-        import_successful = True # Mark as successful for deletion step
+        import_successful = True
 
-    except (requests.exceptions.RequestException, FileNotFoundError) as pre_import_err:
-         # Errors during check/download phase
-         print(f"Pre-import check or download failed: {pre_import_err}")
-         raise pre_import_err # Re-raise for GUI
+    # Keep specific error handling for import phase
     except (sqlite3.Error, IOError, OSError) as import_err:
-         # Errors during the actual import (schema/insert)
          print(f"An error occurred during the import process: {import_err}")
          if conn: conn.rollback()
-         # Do NOT delete source file if import failed
-         raise import_err # Re-raise for GUI
+         raise import_err
     except Exception as e:
-         print(f"An unexpected error occurred: {e}")
+         print(f"An unexpected error occurred during import: {e}")
          if conn: conn.rollback()
-         # Do NOT delete source file if import failed
-         raise e # Re-raise generic exceptions
+         raise e
     finally:
         if conn:
             conn.close()
             print("Database connection closed.")
 
-        # 6. Delete the source file ONLY AFTER successful import
+        # Delete source file ONLY on successful import
         if import_successful:
             try:
                 if os.path.exists(config.INPUT_FILE_PATH):
@@ -208,8 +198,6 @@ def main(progress_callback=None):
                     os.remove(config.INPUT_FILE_PATH)
                     print("Source file deleted successfully.")
                 else:
-                    # This might happen if the import was needed because DB didn't exist,
-                    # but the source file was somehow already deleted. Benign warning.
                     print(f"Warning: Source file '{config.INPUT_FILE_PATH}' not found for deletion after successful import.")
             except OSError as e:
                 print(f"Warning: Could not delete source file '{config.INPUT_FILE_PATH}' after successful import: {e}")
@@ -221,7 +209,29 @@ def main(progress_callback=None):
 # --- Main Execution Guard (for standalone running) ---
 if __name__ == "__main__":
     try:
-        main() # Call without progress callback for CLI execution
+        # CLI run: Perform check, ask (implicitly yes for CLI), download, then import
+        print("Running importer from command line...")
+        check_result = check_for_updates(
+            config.DOWNLOAD_URL,
+            config.DATABASE_PATH
+        )
+
+        if check_result == CHECK_UPDATE_AVAILABLE or check_result == CHECK_DB_MISSING:
+            print("Update required or database missing.")
+            print("Attempting download...")
+            download_ok = download_source_file(config.DOWNLOAD_URL, config.INPUT_FILE_PATH)
+            if download_ok:
+                print("Download successful. Proceeding with main import function...")
+                main() # Run full import
+            else:
+                print("Download failed. Import cannot proceed.")
+                sys.exit(1)
+        elif check_result == CHECK_UP_TO_DATE:
+            print("Database is up-to-date. No import performed.")
+        else: # TIMEOUT or ERROR
+            print(f"Update check failed with status: {check_result}. No import performed.")
+            sys.exit(1)
+
     except Exception as e:
          print(f"\nImport process failed: {e}")
          sys.exit(1)

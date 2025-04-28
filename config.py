@@ -42,6 +42,10 @@ FONT_BOLD_ITALIC_PATH = os.path.join(FONT_DIR, "DejaVuSans-BoldOblique.ttf")
 # --- Download ---
 DOWNLOAD_URL = "https://opendata.astra.admin.ch/ivzod/2000-Typengenehmigungen_TG_TARGA/2200-Basisdaten_TG_ab_1995/emissionen.txt"
 
+# --- Network Timeouts ---
+STARTUP_CHECK_TIMEOUT = 10 # Seconds for the initial HEAD request check
+DOWNLOAD_TIMEOUT = 3600     # Seconds for the full file download
+
 # --- Importer Settings ---
 FILE_ENCODING = 'windows-1252'
 DB_ENCODING = 'utf-8'

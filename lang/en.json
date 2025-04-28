@@ -144,5 +144,24 @@
   "pdf_generated_on": "Generated:",
   "pdf_no_data": "No data available.",
   "pdf_no_compare_data": "No data available for comparison.",
-  "pdf_compare_tg_prefix": "TG:"
+  "pdf_compare_tg_prefix": "TG:",
+
+  "startup_check_title": "Update Check",
+  "startup_check_message": "Checking for database updates...",
+  "msg_title_update_available": "Update Available",
+  "msg_update_available_prompt": "A newer version of the vehicle data is available.\n\nDownload and update now?\n(This may take several minutes and will restart the import process)",
+  "msg_update_declined": "Update declined. Using existing database.",
+  "msg_title_update_check_failed": "Update Check Failed",
+  "msg_update_check_timeout": "Could not check for updates (network timeout after {timeout}s).\nProceeding with the existing local database (if available).",
+  "msg_update_check_error": "An error occurred while checking for updates.\nProceeding with the existing local database (if available).",
+  "status_db_up_to_date": "Database is up-to-date.",
+  "status_update_declined": "Update declined by user.",
+  "download_dialog_title": "Downloading Data",
+  "download_dialog_message": "Downloading latest vehicle data...\nPlease wait.",
+  "status_downloading": "Downloading source file...",
+  "status_download_failed": "Download failed. Using existing database (if available).",
+  "msg_title_download_error": "Download Error",
+  "msg_download_failed": "Failed to download the latest vehicle data file. Please check your internet connection or try again later via the 'Data' menu.",
+  "msg_title_manual_import": "Confirm Import",
+  "msg_manual_import_prompt": "This will download the latest data file (if available) and overwrite the existing database.\n\nAre you sure you want to proceed?"
 }

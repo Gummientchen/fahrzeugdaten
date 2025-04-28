@@ -129,8 +129,7 @@ SUPPORTED_LANGS = {
     "tlh": "tlhIngan Hol (Klingon)",
     "na": "Na'vi",
     "sjn": "Sindarin (Elvish)",
-    "1337": "1337 (Leetspeak)",
-    "x-piglatin": "Igpay Atinlay (Pig Latin)"
+    "1337": "1337 (Leetspeak)"
 }
 
 # --- Derived Constants ---

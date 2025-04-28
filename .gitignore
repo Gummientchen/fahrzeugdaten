@@ -2,3 +2,6 @@ emissionen.db
 __pycache__
 data
 export
+dist
+build
+*.spec

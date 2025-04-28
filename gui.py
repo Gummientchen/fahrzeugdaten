@@ -217,9 +217,9 @@ class VehicleDataApp:
         search_button_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
         self.search_button = ttk.Button(search_button_frame, text="TEMP_SEARCH_BTN", command=self._search_vehicle) # Placeholder
         self.search_button.pack(side=tk.LEFT, padx=5)
-        self.export_button = ttk.Button(search_button_frame, text="TEMP_EXPORT_BTN", command=self._export_vehicle_pdf, state=tk.DISABLED) # Placeholder
+        self.export_button = ttk.Button(search_button_frame, text="TEMP_EXPORT_BTN", command=self._export_vehicle_pdf) # Placeholder
         self.export_button.pack(side=tk.LEFT, padx=5)
-        self.search_results_text = scrolledtext.ScrolledText(self.search_frame, height=10, width=80, wrap=tk.WORD, state=tk.DISABLED, font=("Courier New", 9))
+        self.search_results_text = scrolledtext.ScrolledText(self.search_frame, height=25, width=80, wrap=tk.WORD, state=tk.DISABLED, font=("Courier New", 9))
         self.search_results_text.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(0,5))
 
         # --- Status Bar ---
@@ -485,7 +485,7 @@ class VehicleDataApp:
         self._update_status("status_searching", code=tg_code)
         self.search_results_text.config(state=tk.NORMAL)
         self.search_results_text.delete('1.0', tk.END)
-        self.export_button.config(state=tk.DISABLED) # Disable export until search succeeds
+        # self.export_button.config(state=tk.DISABLED) # Disable export until search succeeds
         self.current_search_data = None # Clear previous search data
 
         try:
@@ -630,8 +630,10 @@ class VehicleDataApp:
 
     # --- Export Handling (MODIFIED) ---
     def _export_vehicle_pdf(self):
+        self._search_vehicle()
+        
         if not self.current_search_data:
-            self._show_error("msg_title_export_error", "msg_export_no_data")
+            # self._show_error("msg_title_export_error", "msg_export_no_data")
             return
 
         result_row, norm_map = self.current_search_data
@@ -790,7 +792,7 @@ if __name__ == "__main__":
 
         app.search_button.config(state=tk.NORMAL)
         # Export button state depends on whether data is loaded, initially disabled
-        app.export_button.config(state=tk.DISABLED)
+        app.export_button.config(state=tk.NORMAL)
         app.compare_button.config(state=tk.NORMAL)
         app._update_status("status_ready") # Set initial status
 

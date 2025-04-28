@@ -8,6 +8,7 @@ import sys
 import json # Import json module
 from datetime import datetime
 import requests
+import subprocess # <--- MAKE SURE THIS IS IMPORTED
 
 # --- Constants ---
 LANG_DIR = "lang"
@@ -42,13 +43,13 @@ def load_translations(lang_code):
     filepath = get_resource_path(relative_filepath)
 
     # Add print for debugging
-    print(f"Attempting to load language file from: {filepath}")
+    # print(f"Attempting to load language file from: {filepath}") # Keep commented out unless debugging
 
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             translations = json.load(f)
         current_language = lang_code
-        print(f"Successfully loaded translations for: {lang_code}")
+        # print(f"Successfully loaded translations for: {lang_code}") # Keep commented out unless debugging
         return True
     except FileNotFoundError:
         print(f"ERROR: Language file not found: {filepath}") # Show the path it tried
@@ -79,11 +80,11 @@ def _(key, **kwargs):
         filepath = get_resource_path(relative_filepath)
         try:
             # Add print for debugging override path
-            print(f"Attempting to load override language file from: {filepath}")
+            # print(f"Attempting to load override language file from: {filepath}") # Keep commented out unless debugging
             with open(filepath, 'r', encoding='utf-8') as f:
                 temp_translations = json.load(f)
             lookup_translations = temp_translations
-            print(f"Successfully loaded override language: {lang_code_override}")
+            # print(f"Successfully loaded override language: {lang_code_override}") # Keep commented out unless debugging
         except Exception as e:
             # Fallback to current translations if override file fails
             print(f"Warning: Failed to load override language file '{filepath}': {e}")
@@ -158,7 +159,7 @@ class VehicleDataApp:
         self.progress_var = tk.DoubleVar()
         self.progress_bar = None
         self.progress_label_var = tk.StringVar()
-        self.current_search_data = None
+        self.current_search_data = None # Still useful for display, but export won't rely on it
         # self.previous_translations = {} # Keep for menu items like Exit/Import - Not strictly needed with index 0 assumption
 
         # --- Styling ---
@@ -442,6 +443,7 @@ class VehicleDataApp:
             # Ensure UI updates happen on the main thread
             self.root.after(0, self._finalize_import, import_success)
 
+    # --- MODIFIED: _finalize_import ---
     def _finalize_import(self, import_successful):
         self._close_waiting_dialog()
         db_now_exists = os.path.exists(DATABASE_PATH)
@@ -457,11 +459,8 @@ class VehicleDataApp:
         if db_now_exists:
             self._update_status("status_ready")
             self.search_button.config(state=tk.NORMAL)
-            # Enable export only if there's current data displayed
-            if self.current_search_data:
-                self.export_button.config(state=tk.NORMAL)
-            else:
-                self.export_button.config(state=tk.DISABLED)
+            # --- CHANGE: Enable export button regardless of current_search_data ---
+            self.export_button.config(state=tk.NORMAL)
             self.compare_button.config(state=tk.NORMAL)
         else:
             # If DB still doesn't exist after import attempt
@@ -475,7 +474,7 @@ class VehicleDataApp:
 
         self.import_running_at_startup = False # Reset flag
 
-    # --- Search Handling ---
+    # --- MODIFIED: Search Handling ---
     def _search_vehicle(self):
         tg_code = self.search_tg_code_entry.get().strip()
         if not tg_code:
@@ -485,17 +484,17 @@ class VehicleDataApp:
         self._update_status("status_searching", code=tg_code)
         self.search_results_text.config(state=tk.NORMAL)
         self.search_results_text.delete('1.0', tk.END)
-        # self.export_button.config(state=tk.DISABLED) # Disable export until search succeeds
+        # self.export_button.config(state=tk.DISABLED) # REMOVED: Export button is always enabled if DB exists
         self.current_search_data = None # Clear previous search data
 
         try:
             result_row, normalized_mapping = search_by_tg_code(tg_code)
             if result_row:
-                self.current_search_data = (result_row, normalized_mapping) # Store data
+                self.current_search_data = (result_row, normalized_mapping) # Store data for display
                 display_text = self._format_search_result(result_row)
                 self.search_results_text.insert(tk.END, display_text)
                 self._update_status("status_search_found", code=tg_code)
-                self.export_button.config(state=tk.NORMAL) # Enable export
+                # self.export_button.config(state=tk.NORMAL) # REMOVED: Export button is always enabled if DB exists
             else:
                 # Use translated message for no results
                 self.search_results_text.insert(tk.END, _("search_results_none", code=tg_code))
@@ -513,7 +512,7 @@ class VehicleDataApp:
         finally:
             self.search_results_text.config(state=tk.DISABLED) # Make read-only again
 
-    # --- _format_search_result (FINAL FIX) ---
+    # --- _format_search_result (FINAL FIX - Remains the same) ---
     def _format_search_result(self, result_row):
         """Formats the search result using translations."""
         lines = []
@@ -628,52 +627,78 @@ class VehicleDataApp:
 
 
 
-    # --- Export Handling (MODIFIED) ---
+    # --- MODIFIED: Export Handling ---
     def _export_vehicle_pdf(self):
-        self._search_vehicle()
-        
-        if not self.current_search_data:
-            # self._show_error("msg_title_export_error", "msg_export_no_data")
+        # REMOVED: self._search_vehicle() call
+
+        # --- Get TG-Code from entry field ---
+        tg_code = self.search_tg_code_entry.get().strip()
+        if not tg_code:
+            self._show_error("msg_title_input_missing", "msg_input_tg_code_export") # Use specific message if desired
             return
 
-        result_row, norm_map = self.current_search_data
-        # Safely get TG code for status message using dictionary access
+        # --- Perform Search within Export function ---
+        self._update_status("status_searching", code=tg_code) # Reuse searching status
         try:
-            # FIX: Access using dictionary-style square brackets instead of .get()
-            tg_code = result_row['TG_Code']
-        except KeyError:
-            # Fallback if 'TG_Code' key is unexpectedly missing (shouldn't happen if search worked)
-            print("Warning: 'TG_Code' key not found in search result data during export. Using 'UNKNOWN_TGCODE'.")
-            tg_code = 'UNKNOWN_TGCODE'
+            result_row, norm_map = search_by_tg_code(tg_code)
+
+            # --- Check if search was successful ---
+            if result_row:
+                # --- Proceed with Export ---
+                self._update_status("status_exporting", code=tg_code)
+                try:
+                    os.makedirs(EXPORT_DIR_SINGLE, exist_ok=True) # Ensure export dir exists
+
+                    # Create filename
+                    cleaned_name_part = clean_sql_identifier(tg_code)
+                    safe_filename_part = cleaned_name_part.lstrip('_')
+                    base_filename = f"{safe_filename_part}.pdf"
+                    full_pdf_path = os.path.join(EXPORT_DIR_SINGLE, base_filename)
+
+                    # Call the export function from export.py
+                    export_single_pdf(result_row, norm_map, full_pdf_path)
+
+                    # --- Update status bar ---
+                    self._update_status("status_export_success", path=full_pdf_path)
+                    # --- REMOVED: Show success message popup ---
+                    # self._show_info("msg_title_export_success", "msg_export_success", path=full_pdf_path)
+
+                    # --- Attempt to open the generated PDF ---
+                    try:
+                        if sys.platform == "win32":
+                            os.startfile(full_pdf_path)
+                        elif sys.platform == "darwin": # macOS
+                            subprocess.call(['open', full_pdf_path])
+                        else: # Linux and other Unix-like systems
+                            subprocess.call(['xdg-open', full_pdf_path])
+                        print(f"Attempted to open PDF: {full_pdf_path}")
+                    except FileNotFoundError:
+                        print(f"Warning: Could not find default application opener for platform '{sys.platform}'. Please open the PDF manually at '{full_pdf_path}'.")
+                    except Exception as e:
+                        print(f"Error attempting to open PDF '{full_pdf_path}': {e}")
+                    # --- End of PDF opening logic ---
+
+                except OSError as e: # Error during PDF file/folder operations
+                    self._update_status("status_export_folder_error", error=e)
+                    self._show_error("msg_title_export_error", "msg_export_folder_error", path=EXPORT_DIR_SINGLE, error=e)
+                except Exception as e: # Error during PDF generation itself
+                    self._update_status("status_export_error", error=e)
+                    self._show_error("msg_title_export_error", "msg_export_unknown_error", error=e)
+
+            else:
+                # --- Search failed (TG-Code not found) ---
+                self._update_status("status_search_not_found", code=tg_code) # Reuse status
+                self._show_error("msg_title_search_error", "msg_search_not_found", code=tg_code) # Reuse message
+
+        except sqlite3.Error as e: # Error during the search_by_tg_code call
+            self._update_status("status_search_db_error", error=e)
+            self._show_error("msg_title_search_error", "msg_search_db_error", error=e)
+        except Exception as e: # Other unexpected error during search
+            self._update_status("status_search_error", error=e)
+            self._show_error("msg_title_search_error", "msg_search_unknown_error", error=e)
 
 
-        self._update_status("status_exporting", code=tg_code)
-        try:
-            os.makedirs(EXPORT_DIR_SINGLE, exist_ok=True) # Ensure export dir exists
-
-            # Create filename (logic remains the same)
-            # Use the tg_code variable obtained above
-            cleaned_name_part = clean_sql_identifier(tg_code)
-            safe_filename_part = cleaned_name_part.lstrip('_') # Avoid leading underscore if TG code starts with number
-            base_filename = f"{safe_filename_part}.pdf"
-            full_pdf_path = os.path.join(EXPORT_DIR_SINGLE, base_filename)
-
-            # Call the export function from export.py
-            # (export.py's create_pdf function already uses dictionary access, which is good)
-            export_single_pdf(result_row, norm_map, full_pdf_path)
-
-            self._update_status("status_export_success", path=full_pdf_path)
-            self._show_info("msg_title_export_success", "msg_export_success", path=full_pdf_path)
-
-        except OSError as e:
-            self._update_status("status_export_folder_error", error=e)
-            self._show_error("msg_title_export_error", "msg_export_folder_error", path=EXPORT_DIR_SINGLE, error=e)
-        except Exception as e:
-            self._update_status("status_export_error", error=e)
-            self._show_error("msg_title_export_error", "msg_export_unknown_error", error=e)
-
-
-    # --- Compare Handling ---
+    # --- MODIFIED: Compare Handling ---
     def _compare_vehicles(self):
         tg_codes_str = self.compare_tg_codes_entry.get().strip()
         if not tg_codes_str:
@@ -723,8 +748,25 @@ class VehicleDataApp:
             )
 
             if pdf_path:
+                # --- Update status bar ---
                 self._update_status("status_compare_success", path=pdf_path)
-                self._show_info("msg_title_compare_success", "msg_compare_success", path=pdf_path)
+                # --- REMOVED: Show success message popup ---
+                # self._show_info("msg_title_compare_success", "msg_compare_success", path=pdf_path)
+
+                # --- Attempt to open the generated Comparison PDF ---
+                try:
+                    if sys.platform == "win32":
+                        os.startfile(pdf_path)
+                    elif sys.platform == "darwin": # macOS
+                        subprocess.call(['open', pdf_path])
+                    else: # Linux and other Unix-like systems
+                        subprocess.call(['xdg-open', pdf_path])
+                    print(f"Attempted to open Comparison PDF: {pdf_path}")
+                except FileNotFoundError:
+                    print(f"Warning: Could not find default application opener for platform '{sys.platform}'. Please open the PDF manually at '{pdf_path}'.")
+                except Exception as e:
+                    print(f"Error attempting to open Comparison PDF '{pdf_path}': {e}")
+                # --- End of Comparison PDF opening logic ---
             else:
                 # If generate_comparison_pdf returns None without raising an exception
                 self._update_status("status_compare_pdf_error")
@@ -742,7 +784,7 @@ class VehicleDataApp:
             self._show_error("msg_title_compare_error", "msg_compare_unknown_error", error=e)
 
 
-# --- Main Execution ---
+# --- MODIFIED: Main Execution ---
 if __name__ == "__main__":
     # Basic check if DATABASE_PATH was imported correctly
     if 'DATABASE_PATH' not in globals():
@@ -771,7 +813,7 @@ if __name__ == "__main__":
              # User chose not to import, disable relevant UI elements
              messagebox.showinfo(_("msg_title_notice"), _("msg_db_missing_continue"))
              app.search_button.config(state=tk.DISABLED)
-             app.export_button.config(state=tk.DISABLED)
+             app.export_button.config(state=tk.DISABLED) # Keep disabled if no DB
              app.compare_button.config(state=tk.DISABLED)
              # Keep import enabled so they can try later
              # Assuming Import is always the first item in the Data menu (index 0)
@@ -791,7 +833,7 @@ if __name__ == "__main__":
             print("Warning: Could not ensure Import menu item is enabled at index 0.")
 
         app.search_button.config(state=tk.NORMAL)
-        # Export button state depends on whether data is loaded, initially disabled
+        # --- CHANGE: Enable export button initially if DB exists ---
         app.export_button.config(state=tk.NORMAL)
         app.compare_button.config(state=tk.NORMAL)
         app._update_status("status_ready") # Set initial status

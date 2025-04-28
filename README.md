@@ -33,6 +33,7 @@ python search.py TYPENGENEHMIGUNG
 Install pyinstaller
 
 ```powershell
+pip install pyinstaller
 pyinstaller --clean --onefile --windowed --name Fahrzeugdaten gui.py --add-data "lang;lang"
 ```
 
